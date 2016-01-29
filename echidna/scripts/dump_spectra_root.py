@@ -20,6 +20,7 @@ import argparse
 import csv
 import echidna.output.store as store
 import echidna.core.spectra as spectra
+import echidna.core.dsextract as dsextract
 import echidna.core.fill_spectrum as fill_spectrum
 import echidna.output.plot as plot
 
@@ -40,17 +41,33 @@ def read_and_dump_root(fname, config_path, spectrum_name, save_path, bipo,
         See :class:`echidna.core.dsextract` for details.
     """
     config = spectra.SpectraConfig.load_from_file(config_path)
+
+    if fv_radius:
+        dim_types = set()
+        for parameter in config.get_pars():
+            dim_type.add(config.get_dim_type())
+        if len(dim_types) != 1:
+            raise Exception("Unable to apply a FV cut with a mix of reco/mc parameters")
+        if dim_type[0] == "reco":
+            cut_list = [dsextract.root_cut_reco_radius(fv_radius)]
+        elif dim_type[0] == "mc":
+            cut_list = [dsextract.root_cut_mc_radius(fv_radius)]
+        else:
+            raise Exception("Unknown dimenstion type %s" % dim_type[0])
+    else:
+        cut_list = []
+
     if outer_radius:
         if "radial3" not in config.get_dims():
             raise ValueError("Outer radius passed as an command line arg "
                              "but no radial3 in the config file.")
         spectrum = fill_spectrum.fill_from_root(
             fname, spectrum_name="%s" % (spectrum_name), config=config,
-            bipo=bipo, fv_radius=fv_radius, outer_radius=outer_radius)
+            bipo=bipo, cuts=cut_list, outer_radius=outer_radius)
     else:
         spectrum = fill_spectrum.fill_from_root(
             fname, spectrum_name="%s" % (spectrum_name), config=config,
-            bipo=bipo, fv_radius=fv_radius)
+            bipo=bipo, cuts=cut_list)
 
     # Plot
     plot_spectrum(spectrum, config)
