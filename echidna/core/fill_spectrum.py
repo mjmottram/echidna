@@ -264,13 +264,16 @@ def fill_from_ntuple(filename, spectrum_name="", config=None, spectrum=None,
     chain.Add(filename)
     if type(config) == str:
         config = spectra.SpectraConfig.load_from_file(config)
+    # evIndex -1 means no trigger, 0 is first trigger
+    # all others are from duplicate simulated events
+    unique_entries = chain.GetEntries("evIndex <= 0")
     if spectrum is None:
         if spectrum_name == "" or not config:
             raise ValueError("Name not set when creating new spectra.")
-        spectrum = spectra.Spectra(str(spectrum_name), chain.GetEntries(),
+        spectrum = spectra.Spectra(str(spectrum_name), unique_entries,
                                    config)
     else:
-        spectrum._num_decays += chain.GetEntries()
+        spectrum._num_decays += unique_entries
         spectrum_name = spectrum._name
     print "Filling", spectrum_name, "with", filename
     extractors = []
