@@ -79,16 +79,16 @@ def _root_mix(spectrum, dsreader, extractors, bipo):
             for var, extractor in extractors.iteritems():
                 var_type = var.split("_")[-1]
                 if var_type == "reco":
-                    if extractor.get_valid_root(ev, ds):
+                    if extractor.get_valid_root(ds, ievent):
                         fill_kwargs[extractor._name] = \
-                            extractor.get_value_root(ev)
+                            extractor.get_value_root(ds, ievent)
                     else:
                         fill = False
                         break
                 else:  # mc or truth
-                    if extractor.get_valid_root(mc, ds):
+                    if extractor.get_valid_root(ds, ievent):
                         fill_kwargs[extractor._name] = \
-                            extractor.get_value_root(mc)
+                            extractor.get_value_root(ds, ievent)
                     else:
                         fill = False
                         break
@@ -123,8 +123,8 @@ def _root_ev(spectrum, dsreader, extractors, bipo):
             fill_kwargs = {}
             fill = True
             for var, extractor in extractors.iteritems():
-                if extractor.get_valid_root(ev, ds):
-                    fill_kwargs[extractor._name] = extractor.get_value_root(ev)
+                if extractor.get_valid_root(ds, ievent):
+                    fill_kwargs[extractor._name] = extractor.get_value_root(ds, ievent)
                 else:
                     fill = False
                     break
@@ -158,8 +158,8 @@ def _root_mc(spectrum, dsreader, extractors, bipo):
             # Only bipos with 1 ev survive bipo cut
             continue
         for var, extractor in extractors.iteritems():
-            if extractor.get_valid_root(mc, ds):
-                fill_kwargs[extractor._name] = extractor.get_value_root(mc)
+            if extractor.get_valid_root(ds):
+                fill_kwargs[extractor._name] = extractor.get_value_root(ds)
             else:
                 fill = False
                 break

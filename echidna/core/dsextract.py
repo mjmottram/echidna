@@ -2,6 +2,55 @@ import numpy
 import rat
 import echidna.calc.constants as const
 
+# Setup a list of cut functions that are commonly used
+# The simpler ones here might be better encoded as lambda functions
+# Love closures, not docstrings.
+def ntuple_cut_ev_index(index):
+    return lambda entry: entry.evIndex == index
+def ntuple_cut_mc():
+    return lambda entry: entry.mc == 1
+def ntuple_cut_valid_fit():
+    return lambda entry: entry.scintFit == 1 and entry.fitValid == 1
+def ntuple_cut_reco_energy(energy):
+    return lambda entry: entry.scintFit == 1 and entry.fitValid == 1 and entry.energy > energy
+
+def root_cut_ev_index(index_):
+    return lambda ds, index: ds.GetEVCount() >= index and \
+        index == index_
+def root_cut_mc():
+    return lambda ds, index: ds.GetMC().GetMCParticleCount() > 0
+def root_cut_valid_fit():
+    return lambda ds, index: ds.GetEV(index).DefaultFitVertexExists() and \
+        ds.GetEV(index).defaultFitVertex.GetValid()
+def root_cut_reco_energy(energy):
+    return lambda ds, index: ds.GetEV(index).DefaultFitVertexExists() and \
+        ds.GetEV(index).GetDefaultFitVertex().ContainsEnergy() and \
+        ds.GetEV(index).GetDefaultFitVertex().ValidEnergy()
+
+
+# Leave some as nested functions
+def ntuple_cut_mc_radius(radius):
+    def call(entry):
+        return (entry.mcPosx**2 + entry.mcPosy**2 + entry.mcPosz**2) < (radius**2)
+    return call
+
+def ntuple_cut_reco_radius(radius):
+    def call(entry):
+        return entry.scintFit==1 and \
+            (entry.posx**2 + entry.posy**2 + entry.posz**2) < (radius**2)
+    return call
+
+def root_cut_mc_radius(radius):
+    def call(ds, index=0):
+        return ds.GetMC().GetMCParticle(0).GetPosition().Mag() < radius
+    return call
+
+def root_cut_reco_radius(radius):
+    def call(ds, index=0):
+        return ds.GetEV(index).DefaultFitVertexExists() and \
+            ev.GetEV(index).GetDefaultFitVertex().GetPosition().Mag() < radius
+    return call
+
 
 def function_factory(dimension, **kwargs):
     '''Factory function that returns a dsextract class
@@ -19,8 +68,8 @@ def function_factory(dimension, **kwargs):
       :class:`echidna.core.dsextract.Extractor`: Extractor object.
     '''
     kwdict = {}
-    if "fv_radius" in kwargs:
-        kwdict["fv_radius"] = kwargs["fv_radius"]
+    if "cuts" in kwargs:
+        kwdict["cuts"] = kwargs["cuts"]
     if dimension == "energy_mc":
         return EnergyExtractMC(**kwdict)
     elif dimension == "energy_reco":
@@ -48,115 +97,55 @@ class Extractor(object):
 
     Args:
       name (str): of the dimension
-      fv_radius (float): Fiducial radius. Applies a cut to remove
-        events which have a radial position greater than the radius of the
-        fiducial volume. If None no cut is applied.
+      cuts (list): list of additional cuts to apply
 
     Attributes:
       _name (str): of the dimension
-      _fv_radius (float): Fiducial radius. Applies a cut to remove
-        events which have a radial position greater than the radius of the
-        fiducial volume. If None no cut is applied.
+      _user_cuts (list): list of additional cuts to apply
     '''
 
-    def __init__(self, name, fv_radius):
+    def __init__(self, name, cuts):
         '''Initialise the class
         '''
         self._name = name
-        self._fv_radius = fv_radius
+        self._user_cuts = cuts # A list of checks which can be appended
+        self._ntuple_cuts = [] # A list of default cuts for Ntuple extractors
+        self._root_cuts = [] # A list of default cuts for ROOT extractors
 
+    def add_cut(self, function):
+        self._user_cuts.append(function)
+
+    def get_valid_ntuple(self, entry):
+        for cut in self._ntuple_cuts + self._user_cuts:
+            if not cut(entry):
+                return False
+        return True
+
+    def get_valid_root(self, *args):
+        for cut in self._root_cuts + self._user_cuts:
+            if not cut(*args):
+                return False
+        return True
 
 class EnergyExtractMC(Extractor):
     '''Quenched energy extraction methods.
 
     Args:
-      fv_radius (float, optional): Fiducial radius. Applies a cut to remove
-        events which have a radial position greater than the radius of the
-        fiducial volume. If None no cut is applied.
-      reco_pos (bool, optional): If true then position cuts will be made on
-        reconstructed position. If False (default) then MC position is used
-        for cuts.
+      cuts (list, options): List of additional cuts to apply.
 
     Attributes:
-      _reco_pos (bool): If true then position cuts will be made on
-      reconstructed position. If False then MC position is used for cuts.
+      _ntuple_cuts (list): default cuts to apply when extracting from ntuples
+      _root_cuts (list): default of cuts to apply when extracting from root
     '''
 
-    def __init__(self, fv_radius=None, reco_pos=False):
+    def __init__(self, cuts=[]):
         '''Initialise the class
         '''
-        super(EnergyExtractMC, self).__init__("energy_mc", fv_radius)
-        self._reco_pos = reco_pos
+        super(EnergyExtractMC, self).__init__("energy_mc", cuts)
+        self._ntuple_cuts = [ntuple_cut_mc()]
+        self._root_cuts = [root_cut_mc()]
 
-    def fv_cut_ntuple(self, entry):
-        """ Applies the fiducial volume (fv) cut to an ntuple entry.
-
-        Args:
-          entry (:class:`ROOT.TChain`): chain entry
-
-        Returns:
-          bool: Indicates pass or fail of cut
-        """
-        if not self._reco_pos:  # Default is to use MC info for the cut
-            if (numpy.fabs(numpy.sqrt((entry.mcPosx)**2 +
-                                      (entry.mcPosy)**2 +
-                                      (entry.mcPosz)**2))) < self._fv_radius:
-                return True  # Passes fiducial volume cut
-            return False  # Fails fiducial volume cut
-        if entry.scintFit == 1:
-            if numpy.fabs(numpy.sqrt((entry.posx)**2 +
-                                     (entry.posy)**2 +
-                                     (entry.posz)**2)) < self._fv_radius:
-                return True  # Passes fiducial volume cut
-            return False  # Fails fiducial volume cut
-        return False  # Failed reconstruction
-
-    def fv_cut_root(self, mc, ds):
-        """ Applies the fiducial volume (fv) cut to a root entry.
-
-        Args:
-          mc (:class:`RAT.DS.MC`): Monte Carlo entry
-          ds (:class:`RAT.DS`): Data Structure entry
-
-        Raises:
-          ValueError: If reconstruced position cut is used on an mc event
-            which has multiple evs.
-
-        Returns:
-          bool: Indicates pass or fail of cut
-        """
-        if not self._reco_pos:  # Default is to use MC info for the cut
-            if mc.GetMCParticle(0).GetPosition().Mag() < self._fv_radius:
-                return True  # Passes fiducial volume cut
-            return False  # Fails fiducial volume cut
-        if ds.GetEVCount == 0:
-            return False  # Failed reconstruction
-        # Reco cut on MC value requires 1 ev else which position to use?
-        if ds.GetEVCount() != 1:
-            raise ValueError("Can only mix cuts for 1 mc = 1 ev")
-        ev = ds.GetEV(0)
-        if ev.GetDefaultFitVertex().GetPosition().Mag() < \
-                self._fv_radius:
-            return True  # Passes fiducial volume cut
-        return False  # Fails fiducial volume cut
-
-    def get_valid_root(self, mc, ds):
-        '''Check whether energy of a DS::MC is valid
-
-        Args:
-          mc (:class:`RAT.DS.MC`): entry
-          ds (:class:`RAT.DS`): Data Structure entry
-
-        Returns:
-          bool: Validity boolean
-        '''
-        if mc.GetMCParticleCount > 0:
-            if self._fv_radius:
-                return self.fv_cut_root(mc, ds)
-            return True  # Passes particle count and no fid v cut
-        return False  # Fails particle count
-
-    def get_value_root(self, mc):
+    def get_value_root(self, ds, index=0):
         '''Get energy value from a DS::MC
 
         Args:
@@ -165,23 +154,7 @@ class EnergyExtractMC(Extractor):
         Returns:
           float: True quenched energy
         '''
-        return mc.GetScintQuenchedEnergyDeposit()
-
-    def get_valid_ntuple(self, entry):
-        '''Check whether energy of an ntuple MC is valid
-
-        Args:
-          entry (:class:`ROOT.TChain`): chain entry
-
-        Returns:
-          bool: Validity boolean
-        '''
-        if entry.mc == 1:
-            if self._fv_radius:
-                return self.fv_cut_ntuple(entry)
-            # MC has associated trigger or vice versa and no fid v applied
-            return True
-        return False  # No associated trigger with mc or vice versa
+        return ds.GetMC().GetScintQuenchedEnergyDeposit()
 
     def get_value_ntuple(self, entry):
         '''Get energy value from an ntuple MC
@@ -199,88 +172,21 @@ class EnergyExtractReco(Extractor):
     '''Reconstructed energy extraction methods.
 
     Args:
-      fv_radius (float, optional): Fiducial radius. Applies a cut to remove
-        events which have a radial position greater than the radius of the
-        fiducial volume. If None no cut is applied.
-      mc_pos (bool, optional): If true then  MC position is used for cuts.
-        If False (default) then position cuts will be made on reconstructed
-        position.
+      cuts (list, options): List of additional cuts to apply.
 
     Attributes:
-      _mc_pos (bool): If true then MC position is used for cuts.
-        If False then position cuts will be made on reconstructed position.
+      _ntuple_cuts (list): default cuts to apply when extracting from ntuples
+      _root_cuts (list): default of cuts to apply when extracting from root
     '''
 
-    def __init__(self, fv_radius=None, mc_pos=False):
+    def __init__(self, cuts=[]):
         '''Initialise the class
         '''
-        super(EnergyExtractReco, self).__init__("energy_reco", fv_radius)
-        self._mc_pos = mc_pos
+        super(EnergyExtractReco, self).__init__("energy_reco", cuts)
+        self._ntuple_cuts = [ntuple_cut_reco_energy(0)]
+        self._root_cuts = [root_cut_reco_energy(0)]
 
-    def fv_cut_ntuple(self, entry):
-        """ Applies the fiducial volume (fv) cut to an ntuple entry.
-
-        Args:
-          entry (:class:`ROOT.TChain`): chain entry
-
-        Returns:
-          bool: Indicates pass or fail of cut
-        """
-        if not self._mc_pos:  # Default is to use reco info for the cut
-            if numpy.fabs(numpy.sqrt((entry.posx)**2 +
-                                     (entry.posy)**2 +
-                                     (entry.posz)**2)) < self._fv_radius:
-                return True  # Passes fiducial volume cut
-            return False  # Fails fiducial volume cut
-        if (numpy.fabs(numpy.sqrt((entry.mcPosx)**2 +
-                                  (entry.mcPosy)**2 +
-                                  (entry.mcPosz)**2))) < self._fv_radius:
-            return True  # Passes fiducial volume cut
-        return False  # Fails fiducial volume cut
-
-    def fv_cut_root(self, ev, ds):
-        """ Applies the fiducial volume (fv) cut to a root entry.
-
-        Args:
-          ev (:class:`RAT.DS.EV`): Event entry
-          ds (:class:`RAT.DS`): Data Structure entry
-
-        Raises:
-          ValueError: If reconstruced position cut is used on an mc event
-            which has multiple evs.
-
-        Returns:
-          bool: Indicates pass or fail of cut
-        """
-        if not self._mc_pos:  # Default is to use reco info for the cut
-            if ev.GetDefaultFitVertex().GetPosition().Mag() < \
-                    self._fv_radius:
-                return True  # Passes fiducial volume cut
-            return False  # Fails fiducial volume cut
-        mc = ds.GetMC()
-        if mc.GetMCParticle(0).GetPosition().Mag() < self._fv_radius:
-            return True  # Passes fiducial volume cut
-        return False  # Fails fiducial volume cut
-
-    def get_valid_root(self, ev, ds):
-        '''Check whether energy of a DS::EV is valid
-
-        Args:
-          ev (:class:`RAT.DS.EV`): event
-          ds (:class:`RAT.DS`): Data Structure entry
-
-        Returns:
-          bool: Validity boolean
-        '''
-        if ev.DefaultFitVertexExists() and \
-                ev.GetDefaultFitVertex().ContainsEnergy() \
-                and ev.GetDefaultFitVertex().ValidEnergy():
-            if self._fv_radius:
-                return self.fv_cut_root(ev, ds)
-            return True  # Passes fit checks and no fid v cut
-        return False  # Fails fit checks
-
-    def get_value_root(self, ev):
+    def get_value_root(self, ds, index=0):
         '''Get energy value from a DS::EV
 
         Args:
@@ -289,22 +195,7 @@ class EnergyExtractReco(Extractor):
         Returns:
           float: Reconstructed energy
         '''
-        return ev.GetDefaultFitVertex().GetEnergy()
-
-    def get_valid_ntuple(self, entry):
-        '''Check whether energy of an ntuple EV is valid
-
-        Args:
-          entry (:class:`ROOT.TChain`): chain entry
-
-        Returns:
-          bool: Validity boolean
-        '''
-        if entry.scintFit == 1 and entry.energy > 0:
-            if self._fv_radius:
-                return self.fv_cut_ntuple(entry)
-            return True  # Passes scintFit, has energy and no fid v cut
-        return False  # Fails scintFit or no energy
+        return ds.GetEV(index).GetDefaultFitVertex().GetEnergy()
 
     def get_value_ntuple(self, entry):
         '''Get energy value from an ntuple EV
@@ -322,91 +213,19 @@ class EnergyExtractTruth(Extractor):
     '''True MC energy extraction methods.
 
     Args:
-      fv_radius (float, optional): Fiducial radius. Applies a cut to remove
-        events which have a radial position greater than the radius of the
-        fiducial volume. If None no cut is applied.
-      reco_pos (bool, optional): If true then position cuts will be made on
-        reconstructed position. If False (default) then MC position is used
-        for cuts.
+      cuts (list, options): List of additional cuts to apply.
 
     Attributes:
-      _reco_pos (bool): If true then position cuts will be made on
-      reconstructed position. If False then MC position is used for cuts.
+      _ntuple_cuts (list): default cuts to apply when extracting from ntuples
+      _root_cuts (list): default of cuts to apply when extracting from root
     '''
 
-    def __init__(self, fv_radius=None, reco_pos=False):
+    def __init__(self, cuts=[]):
         '''Initialise the class
         '''
-        super(EnergyExtractTruth, self).__init__("energy_truth", fv_radius)
-        self._reco_pos = reco_pos
-
-    def fv_cut_ntuple(self, entry):
-        """ Applies the fiducial volume (fv) cut to an ntuple entry.
-
-        Args:
-          entry (:class:`ROOT.TChain`): chain entry
-
-        Returns:
-          bool: Indicates pass or fail of cut
-        """
-        if not self._reco_pos:  # Default is to use MC info for the cut
-            if (numpy.fabs(numpy.sqrt((entry.mcPosx)**2 +
-                                      (entry.mcPosy)**2 +
-                                      (entry.mcPosz)**2))) < self._fv_radius:
-                return True  # Passes fiducial volume cut
-            return False  # Fails fiducial volume cut
-        if entry.scintFit == 1:
-            if numpy.fabs(numpy.sqrt((entry.posx)**2 +
-                                     (entry.posy)**2 +
-                                     (entry.posz)**2)) < self._fv_radius:
-                return True  # Passes fiducial volume cut
-            return False  # Fails fiducial volume cut
-        return False  # Failed reconstruction
-
-    def fv_cut_root(self, mc, ds):
-        """ Applies the fiducial volume (fv) cut to a root entry.
-
-        Args:
-          mc (:class:`RAT.DS.MC`): Monte Carlo entry
-          ds (:class:`RAT.DS`): Data Structure entry
-
-        Raises:
-          ValueError: If reconstruced position cut is used on an mc event
-            which has multiple evs.
-
-        Returns:
-          bool: Indicates pass or fail of cut
-        """
-        if not self._reco_pos:  # Default is to use MC info for the cut
-            if mc.GetMCParticle(0).GetPosition().Mag() < self._fv_radius:
-                return True  # Passes fiducial volume cut
-            return False  # Fails fiducial volume cut
-        if ds.GetEVCount == 0:
-            return False  # Failed reconstruction
-        # Reco cut on MC value requires 1 ev else which position to use?
-        if ds.GetEVCount() != 1:
-            raise ValueError("Can only mix cuts for 1 mc = 1 ev")
-        ev = ds.GetEV(0)
-        if ev.GetDefaultFitVertex().GetPosition().Mag() < \
-                self._fv_radius:
-            return True  # Passes fiducial volume cut
-        return False  # Fails fiducial volume cut
-
-    def get_valid_root(self, mc, ds):
-        '''Check whether energy of a DS::MC is valid
-
-        Args:
-          mc (:class:`RAT.DS.MC`): entry
-          ds (:class:`RAT.DS`): Data Structure entry
-
-        Returns:
-          bool: Validity boolean
-        '''
-        if mc.GetMCParticleCount > 0:
-            if self._fv_radius:
-                return self.fv_cut_root(mc, ds)
-            return True  # Passes particle count and no fid v cut
-        return False  # Fails particle count
+        super(EnergyExtractTruth, self).__init__("energy_truth", cuts)
+        self._ntuple_cuts = [ntuple_cut_mc()]
+        self._root_cuts = [root_cut_mc()]
 
     def get_value_root(self, mc):
         '''Get energy value from a DS::MC
@@ -418,22 +237,6 @@ class EnergyExtractTruth(Extractor):
           float: True energy
         '''
         return mc.GetScintEnergyDeposit()
-
-    def get_valid_ntuple(self, entry):
-        '''Check whether energy of an ntuple MC is valid
-
-        Args:
-          entry (:class:`ROOT.TChain`): chain entry
-
-        Returns:
-          bool: Validity boolean
-        '''
-        if entry.mc == 1:
-            if self._fv_radius:
-                return self.fv_cut_ntuple(entry)
-            # MC has associated trigger or vice versa and no fid v applied
-            return True
-        return False  # No associated trigger with mc or vice versa
 
     def get_value_ntuple(self, entry):
         '''Get energy value from an ntuple MC
@@ -451,91 +254,19 @@ class RadialExtractMC(Extractor):
     '''True radial extraction methods.
 
     Args:
-      fv_radius (float, optional): Fiducial radius. Applies a cut to remove
-        events which have a radial position greater than the radius of the
-        fiducial volume. If None no cut is applied.
-      reco_pos (bool, optional): If true then position cuts will be made on
-        reconstructed position. If False (default) then MC position is used
-        for cuts.
+      cuts (list, options): List of additional cuts to apply.
 
     Attributes:
-      _reco_pos (bool): If true then position cuts will be made on
-      reconstructed position. If False then MC position is used for cuts.
+      _ntuple_cuts (list): default cuts to apply when extracting from ntuples
+      _root_cuts (list): default of cuts to apply when extracting from root
     '''
 
-    def __init__(self, fv_radius=None, reco_pos=False):
+    def __init__(self, cuts=[]):
         '''Initialise the class
         '''
-        super(RadialExtractMC, self).__init__("radial_mc", fv_radius)
-        self._reco_pos = reco_pos
-
-    def fv_cut_ntuple(self, entry):
-        """ Applies the fiducial volume (fv) cut to an ntuple entry.
-
-        Args:
-          entry (:class:`ROOT.TChain`): chain entry
-
-        Returns:
-          bool: Indicates pass or fail of cut
-        """
-        if not self._reco_pos:  # Default is to use MC info for the cut
-            if (numpy.fabs(numpy.sqrt((entry.mcPosx)**2 +
-                                      (entry.mcPosy)**2 +
-                                      (entry.mcPosz)**2))) < self._fv_radius:
-                return True  # Passes fiducial volume cut
-            return False  # Fails fiducial volume cut
-        if entry.scintFit == 1:
-            if numpy.fabs(numpy.sqrt((entry.posx)**2 +
-                                     (entry.posy)**2 +
-                                     (entry.posz)**2)) < self._fv_radius:
-                return True  # Passes fiducial volume cut
-            return False  # Fails fiducial volume cut
-        return False  # Failed reconstruction
-
-    def fv_cut_root(self, mc, ds):
-        """ Applies the fiducial volume (fv) cut to a root entry.
-
-        Args:
-          mc (:class:`RAT.DS.MC`): Monte Carlo entry
-          ds (:class:`RAT.DS`): Data Structure entry
-
-        Raises:
-          ValueError: If reconstruced position cut is used on an mc event
-            which has multiple evs.
-
-        Returns:
-          bool: Indicates pass or fail of cut
-        """
-        if not self._reco_pos:  # Default is to use MC info for the cut
-            if mc.GetMCParticle(0).GetPosition().Mag() < self._fv_radius:
-                return True  # Passes fiducial volume cut
-            return False  # Fails fiducial volume cut
-        if ds.GetEVCount == 0:
-            return False  # Failed reconstruction
-        # Reco cut on MC value requires 1 ev else which position to use?
-        if ds.GetEVCount() != 1:
-            raise ValueError("Can only mix cuts for 1 mc = 1 ev")
-        ev = ds.GetEV(0)
-        if ev.GetDefaultFitVertex().GetPosition().Mag() < \
-                self._fv_radius:
-            return True  # Passes fiducial volume cut
-        return False  # Fails fiducial volume cut
-
-    def get_valid_root(self, mc, ds):
-        '''Check whether radius of a DS::MC is valid
-
-        Args:
-          mc (:class:`RAT.DS.MC`): event
-          ds (:class:`RAT.DS`): Data Structure entry
-
-        Returns:
-          bool: Validity boolean
-        '''
-        if mc.GetMCParticleCount > 0:
-            if self._fv_radius:
-                return self.fv_cut_root(mc, ds)
-            return True  # Passes particle count and no fid v cut
-        return False  # Fails particle count
+        super(RadialExtractMC, self).__init__("radial_mc", cuts)
+        self._ntuple_cuts = [ntuple_cut_mc()]
+        self._root_cuts = [root_cut_mc()]
 
     def get_value_root(self, mc):
         '''Get radius value from a DS::MC
@@ -547,22 +278,6 @@ class RadialExtractMC(Extractor):
           float: True radius
         '''
         return mc.GetMCParticle(0).GetPosition().Mag()
-
-    def get_valid_ntuple(self, entry):
-        '''Check whether energy of an ntuple MC is valid
-
-        Args:
-          entry (:class:`ROOT.TChain`): chain entry
-
-        Returns:
-          bool: Validity boolean
-        '''
-        if entry.mc == 1:
-            if self._fv_radius:
-                return self.fv_cut_ntuple(entry)
-            # MC has associated trigger or vice versa and no fid v applied
-            return True
-        return False  # No associated trigger with mc or vice versa
 
     def get_value_ntuple(self, entry):
         '''Get radius value from an ntuple MC
@@ -582,86 +297,19 @@ class RadialExtractReco(Extractor):
     '''Reconstructed radial extraction methods.
 
     Args:
-      fv_radius (float, optional): Fiducial radius. Applies a cut to remove
-        events which have a radial position greater than the radius of the
-        fiducial volume. If None no cut is applied.
-      mc_pos (bool, optional): If true then  MC position is used for cuts.
-        If False (default) then position cuts will be made on reconstructed
-        position.
+      cuts (list, options): List of additional cuts to apply.
 
     Attributes:
-      _mc_pos (bool): If true then MC position is used for cuts.
-        If False then position cuts will be made on reconstructed position.
+      _ntuple_cuts (list): default cuts to apply when extracting from ntuples
+      _root_cuts (list): default of cuts to apply when extracting from root
     '''
 
-    def __init__(self, fv_radius=None, mc_pos=False):
+    def __init__(self, cuts=[]):
         '''Initialise the class
         '''
-        super(RadialExtractReco, self).__init__("radial_reco", fv_radius)
-        self._mc_pos = mc_pos
-
-    def fv_cut_ntuple(self, entry):
-        """ Applies the fiducial volume (fv) cut to an ntuple entry.
-
-        Args:
-          entry (:class:`ROOT.TChain`): chain entry
-
-        Returns:
-          bool: Indicates pass or fail of cut
-        """
-        if not self._mc_pos:  # Default is to use reco info for the cut
-            if numpy.fabs(numpy.sqrt((entry.posx)**2 +
-                                     (entry.posy)**2 +
-                                     (entry.posz)**2)) < self._fv_radius:
-                return True  # Passes fiducial volume cut
-            return False  # Fails fiducial volume cut
-        if (numpy.fabs(numpy.sqrt((entry.mcPosx)**2 +
-                                  (entry.mcPosy)**2 +
-                                  (entry.mcPosz)**2))) < self._fv_radius:
-            return True  # Passes fiducial volume cut
-        return False  # Fails fiducial volume cut
-
-    def fv_cut_root(self, ev, ds):
-        """ Applies the fiducial volume (fv) cut to a root entry.
-
-        Args:
-          ev (:class:`RAT.DS.EV`): Event entry
-          ds (:class:`RAT.DS`): Data Structure entry
-
-        Raises:
-          ValueError: If reconstruced position cut is used on an mc event
-            which has multiple evs.
-
-        Returns:
-          bool: Indicates pass or fail of cut
-        """
-        if not self._mc_pos:  # Default is to use reco info for the cut
-            if ev.GetDefaultFitVertex().GetPosition().Mag() < \
-                    self._fv_radius:
-                return True  # Passes fiducial volume cut
-            return False  # Fails fiducial volume cut
-        mc = ds.GetMC()
-        if mc.GetMCParticle(0).GetPosition().Mag() < self._fv_radius:
-            return True  # Passes fiducial volume cut
-        return False  # Fails fiducial volume cut
-
-    def get_valid_root(self, ev, ds):
-        '''Check whether radius of a DS::EV is valid
-
-        Args:
-          ev (:class:`RAT.DS.EV`): event
-          ds (:class:`RAT.DS`): Data Structure entry
-
-        Returns:
-          bool: Validity boolean
-        '''
-        if ev.DefaultFitVertexExists() and \
-                ev.GetDefaultFitVertex().ContainsPosition() \
-                and ev.GetDefaultFitVertex().ValidPosition():
-            if self._fv_radius:
-                return self.fv_cut_root(ev, ds)
-            return True
-        return False
+        super(RadialExtractReco, self).__init__("radial_reco", cuts)
+        self._ntuple_cuts = [ntuple_cut_valid_fit()]
+        self._root_cuts = [root_cut_valid_fit()]
 
     def get_value_root(self, ev):
         '''Get radius value from a DS::EV
@@ -673,21 +321,6 @@ class RadialExtractReco(Extractor):
           float: Reconstructed radius
         '''
         return ev.GetDefaultFitVertex().GetPosition().Mag()
-
-    def get_valid_ntuple(self, entry):
-        '''Check whether radius of an ntuple EV is valid
-
-        Args:
-          entry (:class:`ROOT.TChain`): chain entry
-
-        Returns:
-          bool: Validity boolean
-        '''
-        if entry.scintFit == 1:
-            if self._fv_radius:
-                return self.fv_cut_ntuple(entry)
-            return True  # Passes scintFit and no fid v cut
-        return False  # Fails scintFit
 
     def get_value_ntuple(self, entry):
         '''Get radius value from an ntuple EV
@@ -707,97 +340,28 @@ class Radial3ExtractMC(Extractor):
     ''' True :math:`(radius/outer\_radius)^3` radial extraction methods.
 
     Args:
-      fv_radius (float, optional): Fiducial radius. Applies a cut to remove
-        events which have a radial position greater than the radius of the
-        fiducial volume. If None no cut is applied.
+      cuts (list, options): List of additional cuts to apply.
       outer_radius (float, optional): The fixed radius used in calculating
         :math:`(radius/outer\_radius)^3`. If None then the av_radius in
         :class:`echidna.calc.constants` is used in the calculation.
 
     Attributes:
+      _ntuple_cuts (list): default cuts to apply when extracting from ntuples
+      _root_cuts (list): default of cuts to apply when extracting from root
       _outer_radius (float): The fixed radius used in calculating
         :math:`(radius/outer\_radius)^3`.
-      _reco_pos (bool): If true then position cuts will be made on
-      reconstructed position. If False then MC position is used for cuts.
     '''
 
-    def __init__(self, fv_radius=None, outer_radius=None, reco_pos=False):
+    def __init__(self, cuts=[], outer_radius=None):
         '''Initialise the class
         '''
-        super(Radial3ExtractMC, self).__init__("radial3_mc", fv_radius)
+        super(Radial3ExtractMC, self).__init__("radial3_mc", cuts)
         if outer_radius:
             self._outer_radius = outer_radius
         else:
             self._outer_radius = const._av_radius
-        self._reco_pos = reco_pos
-
-    def fv_cut_ntuple(self, entry):
-        """ Applies the fiducial volume (fv) cut to an ntuple entry.
-
-        Args:
-          entry (:class:`ROOT.TChain`): chain entry
-
-        Returns:
-          bool: Indicates pass or fail of cut
-        """
-        if not self._reco_pos:  # Default is to use MC info for the cut
-            if (numpy.fabs(numpy.sqrt((entry.mcPosx)**2 +
-                                      (entry.mcPosy)**2 +
-                                      (entry.mcPosz)**2))) < self._fv_radius:
-                return True  # Passes fiducial volume cut
-            return False  # Fails fiducial volume cut
-        if entry.scintFit == 1:
-            if numpy.fabs(numpy.sqrt((entry.posx)**2 +
-                                     (entry.posy)**2 +
-                                     (entry.posz)**2)) < self._fv_radius:
-                return True  # Passes fiducial volume cut
-            return False  # Fails fiducial volume cut
-        return False  # Failed reconstruction
-
-    def fv_cut_root(self, mc, ds):
-        """ Applies the fiducial volume (fv) cut to a root entry.
-
-        Args:
-          mc (:class:`RAT.DS.MC`): Monte Carlo entry
-          ds (:class:`RAT.DS`): Data Structure entry
-
-        Raises:
-          ValueError: If reconstruced position cut is used on an mc event
-            which has multiple evs.
-
-        Returns:
-          bool: Indicates pass or fail of cut
-        """
-        if not self._reco_pos:  # Default is to use MC info for the cut
-            if mc.GetMCParticle(0).GetPosition().Mag() < self._fv_radius:
-                return True  # Passes fiducial volume cut
-            return False  # Fails fiducial volume cut
-        if ds.GetEVCount == 0:
-            return False  # Failed reconstruction
-        # Reco cut on MC value requires 1 ev else which position to use?
-        if ds.GetEVCount() != 1:
-            raise ValueError("Can only mix cuts for 1 mc = 1 ev")
-        ev = ds.GetEV(0)
-        if ev.GetDefaultFitVertex().GetPosition().Mag() < \
-                self._fv_radius:
-            return True  # Passes fiducial volume cut
-        return False  # Fails fiducial volume cut
-
-    def get_valid_root(self, mc, ds):
-        '''Check whether radius of a DS::MC is valid
-
-        Args:
-          mc (:class:`RAT.DS.MC`): event
-          ds (:class:`RAT.DS`): Data Structure entry
-
-        Returns:
-          bool: Validity boolean
-        '''
-        if mc.GetMCParticleCount > 0:
-            if self._fv_radius:
-                return self.fv_cut_root(mc, ds)
-            return True  # Passes particle count and no fid v cut
-        return False  # Fails particle count
+        self._ntuple_cuts = [ntuple_cut_mc()]
+        self._root_cuts = [root_cut_mc()]
 
     def get_value_root(self, mc):
         '''Get radius value from a DS::MC
@@ -810,22 +374,6 @@ class Radial3ExtractMC(Extractor):
         '''
         return (mc.GetMCParticle(0).GetPosition().Mag() /
                 self._outer_radius) ** 3
-
-    def get_valid_ntuple(self, entry):
-        '''Check whether energy of an ntuple MC is valid
-
-        Args:
-          entry (:class:`ROOT.TChain`): chain entry
-
-        Returns:
-          bool: Validity boolean
-        '''
-        if entry.mc == 1:
-            if self._fv_radius:
-                return self.fv_cut_ntuple(entry)
-            # MC has associated trigger or vice versa and no fid v applied
-            return True
-        return False  # No associated trigger with mc or vice versa
 
     def get_value_ntuple(self, entry):
         '''Get radius value from an ntuple MC
@@ -847,95 +395,28 @@ class Radial3ExtractReco(Extractor):
       methods.
 
     Args:
-      fv_radius (float, optional): Fiducial radius. Applies a cut to remove
-        events which have a radial position greater than the radius of the
-        fiducial volume. If None no cut is applied.
+      cuts (list, options): List of additional cuts to apply.
       outer_radius (float, optional): The fixed radius used in calculating
         :math:`(radius/outer\_radius)^3`. If None then the av_radius in
         :class:`echidna.calc.constants` is used in the calculation.
-      mc_pos (bool, optional): If true then  MC position is used for cuts.
-        If False (default) then position cuts will be made on reconstructed
-        position.
 
     Attributes:
-      _outer_radius (float: The fixed radius used in calculating
+      _ntuple_cuts (list): default cuts to apply when extracting from ntuples
+      _root_cuts (list): default of cuts to apply when extracting from root
+      _outer_radius (float): The fixed radius used in calculating
         :math:`(radius/outer\_radius)^3`.
-      _mc_pos (bool): If true then MC position is used for cuts.
-        If False then position cuts will be made on reconstructed position.
     '''
 
-    def __init__(self, fv_radius=None, outer_radius=None, mc_pos=False):
+    def __init__(self, cuts = [], outer_radius=None):
         '''Initialise the class
         '''
-        super(Radial3ExtractReco, self).__init__("radial3_reco", fv_radius)
+        super(Radial3ExtractReco, self).__init__("radial3_reco", cuts)
         if outer_radius:
             self._outer_radius = outer_radius
         else:
             self._outer_radius = const._av_radius
-        self._mc_pos = mc_pos
-
-    def fv_cut_ntuple(self, entry):
-        """ Applies the fiducial volume (fv) cut to an ntuple entry.
-
-        Args:
-          entry (:class:`ROOT.TChain`): chain entry
-
-        Returns:
-          bool: Indicates pass or fail of cut
-        """
-        if not self._mc_pos:  # Default is to use reco info for the cut
-            if numpy.fabs(numpy.sqrt((entry.posx)**2 +
-                                     (entry.posy)**2 +
-                                     (entry.posz)**2)) < self._fv_radius:
-                return True  # Passes fiducial volume cut
-            return False  # Fails fiducial volume cut
-        if (numpy.fabs(numpy.sqrt((entry.mcPosx)**2 +
-                                  (entry.mcPosy)**2 +
-                                  (entry.mcPosz)**2))) < self._fv_radius:
-            return True  # Passes fiducial volume cut
-        return False  # Fails fiducial volume cut
-
-    def fv_cut_root(self, ev, ds):
-        """ Applies the fiducial volume (fv) cut to a root entry.
-
-        Args:
-          ev (:class:`RAT.DS.EV`): Event entry
-          ds (:class:`RAT.DS`): Data Structure entry
-
-        Raises:
-          ValueError: If reconstruced position cut is used on an mc event
-            which has multiple evs.
-
-        Returns:
-          bool: Indicates pass or fail of cut
-        """
-        if not self._mc_pos:  # Default is to use reco info for the cut
-            if ev.GetDefaultFitVertex().GetPosition().Mag() < \
-                    self._fv_radius:
-                return True  # Passes fiducial volume cut
-            return False  # Fails fiducial volume cut
-        mc = ds.GetMC()
-        if mc.GetMCParticle(0).GetPosition().Mag() < self._fv_radius:
-            return True  # Passes fiducial volume cut
-        return False  # Fails fiducial volume cut
-
-    def get_valid_root(self, ev, ds):
-        '''Check whether radius of a DS::EV is valid
-
-        Args:
-          ev (:class:`RAT.DS.EV`): event
-          ds (:class:`RAT.DS`): Data Structure entry
-
-        Returns:
-          bool: Validity boolean
-        '''
-        if ev.DefaultFitVertexExists() and \
-                ev.GetDefaultFitVertex().ContainsEnergy() \
-                and ev.GetDefaultFitVertex().ValidEnergy():
-            if self._fv_radius:
-                return self.fv_cut_root(ev, ds)
-            return True  # Passes fit checks and no fid v cut
-        return False  # Fails fit checks
+        self._ntuple_cuts = [ntuple_cut_valid_fit()]
+        self._root_cuts = [root_cut_valid_fit()]
 
     def get_value_root(self, ev):
         '''Get radius value from a DS::EV
@@ -948,21 +429,6 @@ class Radial3ExtractReco(Extractor):
         '''
         return (ev.GetDefaultFitVertex().GetPosition().Mag() /
                 self._outer_radius) ** 3
-
-    def get_valid_ntuple(self, entry):
-        '''Check whether radius of an ntuple EV is valid
-
-        Args:
-          entry (:class:`ROOT.TChain`): chain entry
-
-        Returns:
-          bool: Validity boolean
-        '''
-        if entry.scintFit == 1:
-            if self._fv_radius:
-                return self.fv_cut_ntuple(entry)
-            return True  # Passes scintFit and no fid v cut
-        return False  # Fails scintFit
 
     def get_value_ntuple(self, entry):
         '''Get radius value from an ntuple EV
