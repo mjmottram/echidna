@@ -242,3 +242,32 @@ def log_likelihood(observed, expected, per_bin=False):
         return total, ll_per_bin
     else:
         return total
+
+
+def binned_max_ll(observed, expected, per_bin=False):
+    '''Calculate binned maximal log likelihood, does not apply any penalty terms.
+
+    Args:
+      observed (:class:`numpy.array`, *float*): Number of observed
+        events
+      expected (:class:`numpy.array`, *float*): Number of expected
+        events
+      per_bin (bool, optional): If True returns
+        (:obj:`total`, :obj:`ll_per_bin`), otherwise just returns
+        :obj:`total`.
+
+    Raises:
+      ValueError: If arrays are different lengths.
+
+    Returns:
+      float: Calculated binned max LL value
+    '''
+    epsilon = 1e-34
+    expected[expected<epsilon] = epsilon
+    binned_ll = observed * numpy.log(expected)
+    binned_ll -= expected
+    sum_ll = sum(binned_ll)
+    if not per_bin:
+        return sum_ll
+    else:
+        return sum_ll, binned_ll

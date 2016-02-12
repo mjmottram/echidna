@@ -295,6 +295,75 @@ class BakerCousinsLL(TestStatistic):
         return 0.5 * ((current_value - prior)/sigma) ** 2
 
 
+class BinnedMaxLL(TestStatistic):
+    """ Test statistic class for calculating the binned maximum log-likelihood
+    statistic.
+
+    Args:
+      per_bin (bool, optional): If True the statistic in each bin is returned
+        as an :class:`numpy.array`. If False (default) one value for the
+        statistic is returned for the entire array.
+    """
+    def __init__(self, per_bin=False):
+        super(BinnedMaxLL, self).__init__("binned_max_ll", per_bin)
+
+    @classmethod
+    def _compute(self, observed, expected):
+        """ Calculates binned maximum log-likelihood.
+
+        Args:
+          observed (:class:`numpy.array`): Number of observed
+            events
+          expected (:class:`numpy.array`): Number of expected
+            events
+
+        Returns:
+          float: Calculated MaxLL value.
+        """
+        # Chosen due to backgrounds with low rates in ROI
+        epsilon = 1e-34  # Limit of zero
+        expected[expected<epsilon] = epsilon
+        maxll = sum(observed * numpy.log(expected))
+        maxll -= sum(expected)
+        return -1.0 * maxll
+
+    @classmethod
+    def _get_stats(self, observed, expected):
+        """ Gets max log-likelihood for each bin.
+
+        Args:
+          observed (:class:`numpy.array`): Number of observed
+            events
+          expected (:class:`numpy.array`): Number of expected
+            events
+
+        Returns:
+          :class:`numpy.array`: Of the chi squared in each bin.
+        """
+        # Chosen due to backgrounds with low rates in ROI
+        epsilon = 1e-34  # Limit of zero
+        expected[expected<epsilon] = epsilon
+        binned_ll = sum(observed * numpy.log(expected))
+        binned_ll -= expected
+        return binned_ll
+
+    @classmethod
+    def get_penalty_term(self, current_value, prior, sigma):
+        """ Calculates a penalty term value, for a given fit parameter,
+        for the binned max-LL squared test statistic.  Assumes gaussian
+        errors.
+
+        Args:
+          current_value (float): current value of a given fit parameter
+          prior (float): Prior value of a given fit parameter
+          sigma (float): Sigma value of a given fit parameter
+
+        Returns:
+          float: Value of the penalty term
+        """
+        return ((current_value - prior)/sigma) ** 2
+
+
 class Neyman(TestStatistic):
     """ Test statistic class for calculating the Neyman chi-squared test
     statistic.

@@ -258,3 +258,67 @@ class GridSearch(FitResults, Minimiser):
                     yield values, indices
         else:
             yield values, indices
+
+
+class MetropolisHastings(Minimiser):
+    """MetropolisHastings MCMC minimisation
+    """
+
+    def __init__(self, burn_in = 5000, niter = 10000, thin_factor = 10):
+        super(MetropolisHastings, self).__init__(name = 'metropolis_hastings')
+        self._type = MetropolisHastings
+        # Force set the defaults for now
+        self._burn_in = burn_in
+        self._niter = niter
+        self._thin_factor = thin_factor
+
+    def setup(self, start_point, step_size):
+        self._start_point = start_point
+        self._step_size = step_size
+
+    def minimise(self, funct):
+        """Minimise the docstrings!
+        """
+        current_par = self._start_point
+        current_stat = funct(current_par)
+        acceptance = 0
+        sample = [] # could reserve points
+        best_stat = None
+        best_point = None
+
+        for i in range(self._niter):
+
+            # Random jump
+            test_par = numpy.random.normal(current_par, self._step_size)
+            test_stat = funct(test_par)
+            
+            # Test statistic should always be minimised
+            # LL methods should return -ve stat
+            if test_stat < current_stat or \
+               (numpy.exp(current_stat - test_stat) > numpy.random.uniform()):
+                current_par = test_par
+                current_stat = test_stat
+                acceptance += 1
+                accepted = True
+            else:
+                accepted = False
+
+            # Add to sample according to thinning and burn in
+            if i > self._burn_in and not (i % self._thin_factor):
+                sample.append(current_par)
+                if current_stat < best_stat or best_stat is None:
+                    best_stat = current_stat
+                    best_point = current_par
+
+            if not (i%(self._thin_factor*100)):
+                print current_par, current_stat, accepted
+            
+        # Return best fit point
+        # FIXME: this could either be the mean of the sample
+        #        or the point in the sample with the best test_statistic
+        self._best_point = best_point
+        self._best_ll = best_stat
+        self._error = numpy.std(sample, axis=0)
+        # TODO: should acceptance be logged only after burn in?
+        self._acceptance = float(acceptance) / self._niter
+        return numpy.mean(sample, axis=0)

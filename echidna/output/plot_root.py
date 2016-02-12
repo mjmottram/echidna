@@ -137,14 +137,13 @@ def spectral_plot(spectra_dict, dimension="energy", show_plot=False,
                                           bins, low, high)
             summed_total = ROOT.TH1F("summed_total", root_labels,
                                      bins, low, high)
-            summed_total = numpy.zeros(shape=shape)
             summed_background.SetLineStyle(7)
             summed_background.SetLineColor(ROOT.kRed)
             summed_total.SetLineStyle(7)
             summed_total.SetLineColor(ROOT.kBlack)
             leg.AddEntry(summed_total, "Background + Signal", "l")
             leg.AddEntry(summed_background, "Background", "l")
-            hist = spectra.project(dimension, graphical=False)
+            hist = spectra.project(dimension + "_" + dim_type)
             hist.SetLineColor(value.get("style")["color"])
             leg.AddEntry(hist, value.get("label"), 'l')
             hists.append(hist)
@@ -164,7 +163,7 @@ def spectral_plot(spectra_dict, dimension="energy", show_plot=False,
             if par._bins != bins:
                 raise AssertionError("Spectra " + spectra._name + " has "
                                      "incorrect energy upper limit")
-            hist = spectra.project(dimension, graphical=False)
+            hist = spectra.project(dimension + "_" + dim_type)
             hist.SetLineColor(value.get("style")["color"])
             leg.AddEntry(hist, value.get("label"), 'l')
             hists.append(hist)
@@ -179,7 +178,7 @@ def spectral_plot(spectra_dict, dimension="energy", show_plot=False,
 
     # Plot limit
     if limit:
-        hist = limit.project(dimension, graphical=False)
+        hist = limit.project(dimension + "_" + dim_type)
         hist.SetLineColor(ROOT.kGray)
         leg.AddEntry(hist, "Kamland-Zen Limit", "l")
     leg.Draw("same")

@@ -122,13 +122,14 @@ def spectral_plot(spectra_dict, dimension, fig_num=1, show_plot=True,
       matplotlib.pyplot.figure: Plot of the signal and backgrounds.
     """
     fig = plt.figure(fig_num)
-    axis = fig.add_subplot(3, 1, (1, 2))
+    axis = fig.add_subplot(3, 1, 1)
 
     # All spectra should have same width
     first_spectra = True
     for value in spectra_dict.values():
         spectra = value.get("spectra")
-        par = spectra.get_config().get_par(dimension)
+        dim_type = spectra.get_config().get_dim_type(dimension)
+        par = spectra.get_config().get_par(dimension + "_" + dim_type)
         if first_spectra:
             low = par._low
             high = par._high
