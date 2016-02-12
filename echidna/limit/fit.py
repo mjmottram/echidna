@@ -1,27 +1,38 @@
 import numpy
 
 import echidna.output.store as store
-from echidna.limit.fit_results import FitResults
 from echidna.limit.minimise import GridSearch
+from echidna.limit.fit_results import FitResults
 from echidna.errors.custom_errors import CompatibilityError
-from echidna.core.spectra import SpectraFitConfig
+from echidna.core.spectra import GlobalFitConfig, SpectraFitConfig
 
 import copy
 import os
+import logging
+import yaml
 
 
 class Fit(object):
     """ Class to handle fitting.
+
+    .. warning:: The :class:`Fit` initialisation will try to set
+      atrributes using the values provided. If a value is not provided
+      echidna will attempt to set the default. If this is not possible
+      a warning will be raised and you will have to set this attribute
+      manually before calling :meth:`fit`.
 
     Args:
       roi (dictionary): Region Of Interest you want to fit in. The format of
         roi is e.g. {"energy": (2.4, 2.6), "radial3": (0., 0.2)}
       test_statistic (:class:`echidna.limit.test_statistic.TestStatistic`): An
         appropriate class for calculating test statistics.
+      fit_config (:class:`FitConfig`, optional): Config class for fit -
+        usually loaded from file.
       data (:class:`echidna.core.spectra.Spectra`): Data spectrum you want to
         fit.
-      fixed_background (:class:`echidna.core.spectra.Spectra`, optional):
-        A spectrum containing all fixed backgrounds.
+      fixed_background (dict, optional): Dictionary containing all fixed
+        backgrounds, with :class:`echidna.core.spectra.Spectra` as keys
+        and priors (float) as values.
       floating_backgrounds (list, optional): one
         :class:`echidna.core.spectra.Spectra` for each background to float.
       signal (:class:`echidna.core.spectra.Spectra`):
@@ -29,19 +40,28 @@ class Fit(object):
       shrink (bool, optional): If set to True (default),
         :meth:`shrink` method is called on all spectra shrinking them to
         the ROI.
-      minimiser (:class:`echidna.limit.minimiser.Minimiser`): Object to
-        handle the minimisation.
-      use_pre_made (bool): Flag whether to load a pre-made spectrum
+      minimiser (:class:`echidna.limit.minimiser.Minimiser`, optional): Object
+        to handle the minimisation.
+      fit_results (:class:`FitResults`, optional): Specify a separate
+        Fit Results class.
+      use_pre_made (bool, optional): Flag whether to load a pre-made spectrum
         for each systematic value, or apply convolutions on the fly.
-      pre_made_dir (string): Directory in which pre-made convolved
+      pre_made_dir (string, optional): Directory in which pre-made convolved
         spectra are stored.
+      single_bin (bool, optional): Flag for a single bin fit (e.g. simple
+        counting experiment).
+      per_bin (bool, optional): Flag to monitor values of test
+        statistic, per bin included in the fit (ROI)
 
     Attributes:
+      _logger (loggging.Logger): Logger for :class:`Fit` class.
+      _checked
       _roi (dictionary): Region Of Interest you want to fit in. The format of
         roi is e.g. {"energy": (2.4, 2.6), "radial3": (0., 0.2)}
       _test_statistic (:class:`echidna.limit.test_statistic.TestStatistic`): An
         appropriate class for calculating test statistics.
-      _fit_config ():
+      _fit_config (:class:`FitConfig`): Config class for fit -
+        usually loaded from file.
       _data (:class:`echidna.core.spectra.Spectra`): Data spectrum you want to
         fit.
       _fixed_background (:class:`echidna.core.spectra.Spectra`):
@@ -52,6 +72,8 @@ class Fit(object):
         A spectrum of the signal that you are fitting.
       _minimiser (:class:`echidna.limit.minimiser.Minimiser)`: Object to
         handle the minimisation.
+      _fit_results (:class:`FitResults`): Specify a separate
+        Fit Results class.
       _checked (bool): If True then the fit class is ready to be used.
       _use_pre_made (bool): Flag whether to load a pre-made spectrum
         for each systematic value, or apply convolutions on the fly.
@@ -60,53 +82,80 @@ class Fit(object):
     """
     def __init__(self, roi, test_statistic, fit_config=None, data=None,
                  fixed_backgrounds=None, floating_backgrounds=None,
-                 signal=None, shrink=True, minimiser=None, fit_results=None,
-                 use_pre_made=True, pre_made_base_dir=None):
+                 signal=None, shrink=True, per_bin=False, minimiser=None,
+                 fit_results=None, use_pre_made=False, pre_made_base_dir=None,
+                 single_bin=False):
+        self._logger = logging.getLogger("Fit")
         self._checked = False
         self.set_roi(roi)
-        self._test_statistic = test_statistic
-        self._fit_config = fit_config
-        if not self._fit_config:
-            self._fit_config = SpectraFitConfig({}, "")
-        self._data = data
-        if self._data:
-            self._data_pars = self.get_roi_pars(self._data)
-        else:
+
+        self.set_test_statistic(test_statistic)
+
+        if not fit_config:
+            fit_config = SpectraFitConfig({}, "")
+        self.set_fit_config(fit_config)
+
+        if data:
+            self.set_data(data)
+        else:  # set both as None for now
+            self._data = None
             self._data_pars = None
-        self._fixed_background = None
+            self._logger.warning("Data has not been set. This must be set "
+                                 "manually before running the fit.")
+
         if fixed_backgrounds:  # spectra_dict in expected form
             self.make_fixed_background(fixed_backgrounds)  # sets attribute
-        if self._fixed_background:
-            self._fixed_pars = self.get_roi_pars(self._fixed_background)
-        else:
+        else:  # set both as None for now
+            self._fixed_background = None
             self._fixed_pars = None
+            self._logger.warning("Fixed background has not been set. Either "
+                                 "fixed background or at least one floating "
+                                 "is required to run the fit.")
+
         if floating_backgrounds:
-            # Sets self._floating_backgrounds and self._floating_pars
             self.set_floating_backgrounds(floating_backgrounds)
-        else:  # Set both as None
+        else:  # Set both as None for now
             self._floating_backgrounds = None
             self._floating_pars = None
-        self._signal = signal
-        if self._signal:
-            self._signal_pars = self.get_roi_pars(self._signal)
-        else:
+            self._logger.warning("No floating background has been set. Either "
+                                 "fixed background or at least one floating "
+                                 "is required to run the fit.")
+
+        # Now all floating backgrounds are loaded, check fit par values
+        for par in self.get_fit_config().get_spectra_pars():
+            par.check_values()  # raises an error if prior is not in values
+
+        if signal:
+            self.set_signal(signal)
+        else:  # Set both as None for now
+            self._signal = None
             self._signal_pars = None
+            self._logger.warning("No signal has been set.")
+
         if shrink:
             self.shrink_all()
-        self.check_all_spectra()
-        if minimiser is None:  # Use default (GridSearch)
-            minimiser = GridSearch(self._fit_config,
-                                   self._fit_config.get_name())
-        self._minimiser = minimiser
-        # create fit results object - not required if using GridSearch.
-        if fit_results is None:
-            if isinstance(self._minimiser, GridSearch):
-                fit_results = self._minimiser
-            else:
-                fit_results = FitResults(fit_config, fit_config.get_name())
-        self._fit_results = fit_results
+
+        self._per_bin = per_bin
+
+        # Try to set minimiser and fit_results
+        # Will only work if check_all_spectra passes.
+        try:
+            self.set_minimiser(minimiser)
+        except CompatibilityError as detail:
+            self._minimiser = None
+            self._logger.warning("Minimiser could not be set because: %s" %
+                                 detail)
+
+        try:
+            self.set_fit_results(fit_results)
+        except CompatibilityError as detail:
+            self._fit_results = None
+            self._logger.warning("Fit results could not be set because: %s" %
+                                 detail)
+
         self._use_pre_made = use_pre_made
         self._pre_made_base_dir = pre_made_base_dir
+        self._single_bin = single_bin
 
     def append_fixed_background(self, spectra_dict, shrink=True):
         ''' Appends the fixed background with more spectra.
@@ -131,6 +180,9 @@ class Fit(object):
         Raises:
           CompatibilityError: If the data spectra exists and its roi pars have
             not been set.
+          CompatibilityError: If the data spectrum has not been set.
+          CompatibilityError: If neither fixed background nor at least
+            one floating background, has been set.
           CompatibilityError: If the fixed background spectra exists and its
             roi pars have not been set.
           CompatibilityError: If the signal spectra exists and its
@@ -147,15 +199,25 @@ class Fit(object):
             if not self._data_pars:
                 raise CompatibilityError("data roi pars have not been set.")
             self.check_spectra(self._data)
+        else:
+            raise CompatibilityError("data spectrum has not been set.")
+
+        if (self._fixed_background is None and
+                self._floating_backgrounds is None):
+            raise CompatibilityError("Must provide either fixed background "
+                                     "or at least one floating background "
+                                     "to fit to data")
         if self._fixed_background:
             if not self._fixed_pars:
                 raise CompatibilityError("fixed background roi pars have not "
                                          "been set.")
             self.check_spectra(self._fixed_background)
+
         if self._signal:
             if not self._signal_pars:
                 raise CompatibilityError("signal roi pars have not been set.")
             self.check_spectra(self._signal)
+
         if self._floating_backgrounds:
             if not self._floating_pars:
                 raise CompatibilityError("floating background roi pars have "
@@ -167,8 +229,6 @@ class Fit(object):
             for background in self._floating_backgrounds:
                 self.check_fit_config(background)
                 self.check_spectra(background)
-        if self._signal:
-            self.check_spectra(self._signal)
 
     def check_fit_config(self, spectra):
         """ Checks that a spectra has a fit config.
@@ -182,22 +242,72 @@ class Fit(object):
         """
         if not spectra.get_fit_config():
             raise CompatibilityError("%s has no fit config" % spectra._name)
+        for par in spectra.get_fit_config().get_pars():
+            parameter = spectra.get_fit_config().get_par(par)
+            parameter.check_values()
 
     def check_fitter(self):
         """ Checks that the Fit class is ready to be used for fitting.
 
         Raises:
-          CompatibilityError: If no data spectrum is present.
-          CompatibilityError: If no fixed or floating backgrounds spectra are
-            present.
+          IndexError: If fit config contains no parameters
+          ValueError: If number of floating backgrounds and number of
+            spectral fit parameters do not match.
+          AttributeError: If :attr:`_minimiser` has not been set.
+          AttributeError: If :attr:`_fit_results` has not been set.
+          ValueError: If (un)expected per_bin flag in minimiser.
+          ValueError: If (un)expected integer value for num_bins, in
+            fit_results.
+          ValueError: If (un)expected per_bin flag in test_statistic.
         """
-        if not self._data:
-            raise CompatibilityError("No data spectrum exists in the fitter.")
-        if not self._fixed_background and not self._floating_backgrounds:
-            raise CompatibilityError("No fixed or floating backgrounds exist "
-                                     "in the fitter.")
         self.check_all_spectra()
+
+        # Check fit parameters
+        if len(self.get_fit_config().get_pars()) == 0:
+            raise IndexError("No parameters found in fit config.")
+        if self._floating_backgrounds is not None:
+            if (len(self.get_fit_config().get_spectra_pars()) !=
+                    len(self._floating_backgrounds)):
+                self._logger.error(
+                    "Spectral fit parameters: %s" %
+                    str(self.get_fit_config().get_spectra_pars()))
+                raise ValueError("Number of spectral fit pars and "
+                                 "number of floating backgrounds do not match")
+        else:
+            if len(self.get_fit_config().get_spectra_pars()) != 0:
+                self._logger.error(
+                    "Spectral fit parameters: %s" %
+                    str(self.get_fit_config().get_spectra_pars()))
+                raise ValueError("Expected 0 spectral fit pars for "
+                                 "no floating backgrounds")
+
+        # Check minimiser and fit results
+        if self._minimiser is None:
+            raise AttributeError("Minimiser has not been set.")
+        if self._fit_results is None:
+            raise AttributeError("Fit results has not been set.")
+
+        # Check per_bin propagation
+        if self._per_bin:
+            if not self._minimiser._per_bin:
+                raise ValueError("Expected per_bin True flag in minimiser")
+        else:
+            if self._minimiser._per_bin:
+                raise ValueError("Unexpected per_bin True flag in minimiser")
+
+        if not self._test_statistic._per_bin:
+            raise ValueError("Expected per_bin True flag in test_statistic")
+
         self._checked = True
+
+        self._logger.info("Fitter checked!")
+        self._logger.info("Running fit with the following parameters:")
+        logging.getLogger("extra").info(
+            yaml.dump(self.get_fit_config().dump(basic=True)))
+        for par in self.get_fit_config().get_pars():
+            parameter = self.get_fit_config().get_par(par)
+            self._logger.debug("Parameter %s, with values:\n\n" % par)
+            logging.getLogger("extra").debug(str(parameter.get_values()))
 
     def check_roi(self, roi):
         """ Checks the ROI used to fit.
@@ -235,7 +345,7 @@ class Fit(object):
           ValueError: If roi high value and spectra high value are not equal.
         """
         for dim in self._roi:
-            dim_type = self._data.get_config().get_dim_type(dim)
+            dim_type = spectra.get_config().get_dim_type(dim)
             par = dim + "_" + dim_type
             if not numpy.isclose(self._roi[dim][0],
                                  spectra.get_config().get_par(par)._low):
@@ -257,6 +367,11 @@ class Fit(object):
           :class:`echidna.core.spectra.Spectra`: The data you are fitting.
         """
         return self._data
+
+    def get_fit_config(self):
+        """
+        """
+        return self._fit_config
 
     def get_fit_results(self):
         """ Gets the fit results object for the fit.
@@ -282,6 +397,14 @@ class Fit(object):
           list: The floating backgrounds you are fitting.
         """
         return self._floating_backgrounds
+
+    def get_minimiser(self):
+        """ Gets the minimiser you are using.
+
+        Returns:
+          :class:`echidna.limit.minimise.Minimiser`: The minimiser
+        """
+        return self._minimiser
 
     def get_test_statistic(self):
         """ Gets the class instance you are using to calculate the test
@@ -336,6 +459,7 @@ class Fit(object):
         """
         if not self._checked:
             self.check_fitter()
+
         if not self._floating_backgrounds:  # Use fixed only
             observed = self._data.nd_project(self._data_pars)
             expected = self._fixed_background.nd_project(self._fixed_pars)
@@ -346,7 +470,7 @@ class Fit(object):
         else:  # Pass to minimiser
             if self._minimiser is None:
                 raise AttributeError("Minimiser is not set.")
-            return self._minimiser.minimise(self._funct)
+            return self._minimiser.minimise(self._funct, self._test_statistic)
 
     def _funct(self, *args):
         """ Callable to pass to minimiser.
@@ -358,6 +482,7 @@ class Fit(object):
         Returns:
           float: Value of the test statistic given the current values
             of the fit parameters.
+          float: Total penalty term to be applied to the test statistic.
 
         Raises:
           ValueError: If :attr:`_floating_backgrounds` is None. This
@@ -381,7 +506,10 @@ class Fit(object):
 
         # Loop over all floating backgrounds
         observed = self._data.nd_project(self._data_pars)
-        expected = self._fixed_background.nd_project(self._fixed_pars)
+        if self._fixed_background:
+            expected = self._fixed_background.nd_project(self._fixed_pars)
+        else:
+            expected = None
         global_pars = self._fit_config.get_global_pars()
         for spectrum, floating_pars in zip(self._floating_backgrounds,
                                            self._floating_pars):
@@ -390,7 +518,7 @@ class Fit(object):
                 spectrum = self.load_pre_made(spectrum, global_pars)
             else:
                 for parameter in global_pars:
-                    par = self._fit_congfig.get_par(parameter)
+                    par = self._fit_config.get_par(parameter)
                     spectrum = par.apply_to(spectrum)
 
             # Apply spectrum-specific parameters
@@ -402,25 +530,37 @@ class Fit(object):
             # Shrink to roi
             self.shrink_spectra(spectrum)
             # and then add projection to expected spectrum
-            expected += spectrum.nd_project(floating_pars)
+            if expected is not None:
+                expected += spectrum.nd_project(floating_pars)
+            else:
+                expected = spectrum.nd_project(floating_pars)
 
         # Add signal, if required
         if self._signal:
             expected += self._signal.nd_project(self._signal_pars)
+
+        # If single bin - sum over expected and observed
+        if self._single_bin:
+            expected = numpy.sum(expected)
+            observed = numpy.sum(observed)
 
         # Calculate value of test statistic
         test_statistic = self._test_statistic.compute_statistic(
             observed.ravel(), expected.ravel())
 
         # Add penalty terms
+        total_penalty = 0.
         for parameter in self._fit_config.get_pars():
             par = self._fit_config.get_par(parameter)
             current_value = par.get_current_value()
             prior = par.get_prior()
             sigma = par.get_sigma()
-            test_statistic += self._test_statistic.get_penalty_term(
-                current_value, prior, sigma)
-        return test_statistic
+            # If sigma is explicitly None add no penalty term
+            if (sigma is not None):
+                total_penalty += self._test_statistic.get_penalty_term(
+                    current_value, prior, sigma)
+
+        return test_statistic, total_penalty
 
     def load_pre_made(self, spectrum, global_pars):
         """ Load pre-made convolved spectra.
@@ -470,6 +610,8 @@ class Fit(object):
         first = True
         for spectrum, scaling in spectra_dict.iteritems():
             # Copy so original spectra is unchanged
+            self._logger.debug("Adding Spectra with name %s to"
+                               "_fixed_background" % spectrum.get_name())
             spectrum = copy.deepcopy(spectrum)
             if first:
                 first = False
@@ -508,7 +650,49 @@ class Fit(object):
         else:
             self.check_spectra(data)
         self._data = data
+        self._logger.debug("Setting Spectra with name %s as data" %
+                           data.get_name())
         self._data_pars = self.get_roi_pars(data)
+
+    def set_fit_config(self, fit_config):
+        """
+        Args:
+          fit_config (:class:`echidna.core.spectra.FitConfig`): Config
+            for fit.
+
+        Raises:
+          TypeError: If fit_config is not of type :class:`FitConfig`.
+        """
+        if isinstance(fit_config, GlobalFitConfig):
+            self._fit_config = fit_config
+        else:
+            raise TypeError("fit_config type (%s) is invalid" %
+                            type(fit_config))
+
+    def set_fit_results(self, fit_results=None):
+        """
+        Args:
+          fit_results (:class:`FitResults`, optional): The fit results
+            instance.
+        Raises:
+          IndexError: If fit config contains no parameters.
+        """
+        self.check_all_spectra()  # All spectra should be set and checked first
+        if fit_results:
+            self._fit_results = fit_results
+            self._logger.debug("Setting %s as fit_results" %
+                               fit_results.get_name())
+        else:  # If using GridSearch minimiser this is should befit_results
+            if len(self.get_fit_config().get_pars()) == 0:
+                raise IndexError("No parameters found in fit config.")
+            if isinstance(self._minimiser, GridSearch):
+                self._fit_results = self._minimiser
+                self._logger.debug("Setting GridSearch (%s) as fit_results" %
+                                   self._minimiser.get_name())
+            else:
+                self._fit_results = FitResults(
+                    self._fit_config, copy.copy(self._data.get_config()),
+                    name=self._fit_config.get_name())
 
     def set_fixed_background(self, fixed_background, shrink=True):
         """ Sets the fixed background you want to fit.
@@ -537,6 +721,8 @@ class Fit(object):
         """
         floating_pars = []
         for background in floating_backgrounds:
+            self._logger.debug("Adding Spectra with name %s to"
+                               "_floating_backgrounds" % background.get_name())
             self.check_fit_config(background)
             # Spectrum has a valid fit config, add to GlobalFit Config
             self._fit_config.add_config(background.get_fit_config())
@@ -548,6 +734,39 @@ class Fit(object):
         self._floating_backgrounds = floating_backgrounds
         self._floating_pars = floating_pars
 
+    def set_minimiser(self, minimiser=None):
+        """ Sets the minimiser to use in fitting.
+
+        Args:
+          minimiser (:class:`echidna.limit.minimise.Minimiser`, optional): The
+            minimiser to use in the fit.
+
+        Raises:
+          IndexError: If fit config contains no parameters.
+        """
+        self.check_all_spectra()  # All spectra should be set and checked first
+        if minimiser:
+            self._minimiser = minimiser
+            self._logger.debug("Setting %s as minimiser" %
+                               minimiser.get_name())
+        else:  # Use default GridSearch
+            if len(self.get_fit_config().get_pars()) == 0:
+                raise IndexError("No parameters found in fit config.")
+            if self._per_bin:
+                self._minimiser = GridSearch(
+                    fit_config=self._fit_config,
+                    spectra_config=self._data.get_config(),
+                    name=self._fit_config.get_name(),
+                    # This assumes fitting over all dimensions
+                    per_bin=self._per_bin)
+            else:
+                self._minimiser = GridSearch(
+                    fit_config=self._fit_config,
+                    spectra_config=self._data.get_config(),
+                    name=self._fit_config.get_name())
+            self._logger.debug("Created GridSearch (%s) to use as minimiser" %
+                               self._minimiser.get_name())
+
     def set_test_statistic(self, test_statistic):
         """ Sets the method you want to use to calculate test statistics in
           the fit.
@@ -557,6 +776,7 @@ class Fit(object):
             An appropriate class for calculating test statistics.
         """
         self._test_statistic = test_statistic
+        self._logger.debug("Set _test_statistic as %s" % str(test_statistic))
 
     def set_roi(self, roi):
         """ Sets the region of interest you want to fit in.
@@ -568,6 +788,7 @@ class Fit(object):
         """
         self.check_roi(roi)
         self._roi = roi
+        self._logger.debug("Set _roi as %s" % str(roi))
         self._checked = False  # Must redo checks for a new roi
 
     def set_signal(self, signal, shrink=True):
@@ -584,6 +805,8 @@ class Fit(object):
         else:
             self.check_spectra(signal)
         self._signal = signal
+        self._logger.debug("Set _signal as Spectra with name %s" %
+                           signal.get_name())
         self._signal_pars = self.get_roi_pars(signal)
 
     def set_pre_made_dir(self, directory):

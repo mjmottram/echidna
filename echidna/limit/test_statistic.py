@@ -152,16 +152,17 @@ class BakerCousinsChi(TestStatistic):
             observed = numpy.array([observed])
         if isinstance(expected, float):
             expected = numpy.array([expected])
+        observed = observed.astype('float')
+        expected = expected.astype('float')
         epsilon = 1e-34  # In the limit of zero
         total = 0
-        for i in range(len(observed)):
-            if expected[i] < epsilon:
-                expected[i] = epsilon
-            if observed[i] < epsilon:
-                bin_value = expected[i]
+        for exp, obs in zip(expected, observed):
+            if exp < epsilon:
+                exp = epsilon
+            if obs < epsilon:
+                bin_value = exp
             else:
-                bin_value = expected[i] - observed[i] + observed[i] *\
-                    numpy.log(observed[i] / expected[i])
+                bin_value = exp - obs + obs * numpy.log(obs / exp)
             total += bin_value
         return 2. * total
 
@@ -181,18 +182,23 @@ class BakerCousinsChi(TestStatistic):
         Returns:
           :class:`numpy.array`: Of the chi squared in each bin.
         """
+        not_per_bin = self._compute(observed, expected)
+        observed = observed.astype('float')
+        expected = expected.astype('float')
         epsilon = 1e-34  # In the limit of zero
         stats = []
-        for i in range(len(observed)):
-            if expected[i] < epsilon:
-                expected[i] = epsilon
-            if observed[i] < epsilon:
-                bin_value = expected[i]
+        for exp, obs in zip(expected, observed):
+            if exp < epsilon:
+                exp = epsilon
+            if obs < epsilon:
+                bin_value = exp
             else:
-                bin_value = expected[i] - observed[i] + observed[i] *\
-                    numpy.log(observed[i] / expected[i])
-            stats.append(2.*bin_value)
-        return numpy.array(stats)
+                bin_value = exp - obs + obs * numpy.log(obs / exp)
+            stats.append(bin_value)
+        stats = 2. * numpy.array(stats)
+        if not numpy.allclose(numpy.sum(stats), not_per_bin):
+            raise ValueError("ERROR!!!")
+        return stats
 
     @classmethod
     def get_penalty_term(self, current_value, prior, sigma):
@@ -207,7 +213,7 @@ class BakerCousinsChi(TestStatistic):
         Returns:
           float: Value of the penalty term
         """
-        return ((current_value - prior)/sigma) ** 2
+        return ((current_value - prior)/float(sigma)) ** 2
 
 
 class BakerCousinsLL(TestStatistic):
