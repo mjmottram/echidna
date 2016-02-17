@@ -1,15 +1,16 @@
 import numpy
 
 import echidna.output.store as store
-from echidna.limit.minimise import GridSearch
-from echidna.limit.fit_results import FitResults
+from echidna.fit.minimise import GridSearch
+from echidna.fit.fit_results import FitResults
 from echidna.errors.custom_errors import CompatibilityError
-from echidna.core.spectra import GlobalFitConfig, SpectraFitConfig
+from echidna.core.config import GlobalFitConfig
 
-import copy
-import os
 import logging
+import collections
+import os
 import yaml
+import copy
 
 
 class Fit(object):
@@ -92,7 +93,8 @@ class Fit(object):
         self.set_test_statistic(test_statistic)
 
         if not fit_config:
-            fit_config = SpectraFitConfig({}, "")
+            parameters = collections.OrderedDict({})
+            fit_config = GlobalFitConfig("gloabl_fit_config", parameters)
         self.set_fit_config(fit_config)
 
         if data:
@@ -168,7 +170,7 @@ class Fit(object):
         '''
         for spectrum, scaling in spectra_dict.iteritems():
             # Copy so original spectra is unchanged
-            spectrum = copy.deepcopy(spectrum)
+            spectrum = copy.copy(spectrum)
             if shrink:
                 self.shrink_spectra(spectrum)
             spectrum.scale(scaling)
@@ -480,9 +482,12 @@ class Fit(object):
             current iteration.
 
         Returns:
-          float: Value of the test statistic given the current values
-            of the fit parameters.
-          float: Total penalty term to be applied to the test statistic.
+          tuple: containing:
+
+            :class:`numpy.ndrray`: Values of the test statistic given
+              the current values of the fit parameters.
+            float: Total penalty term to be applied to the test
+              statistic.
 
         Raises:
           ValueError: If :attr:`_floating_backgrounds` is None. This
@@ -494,6 +499,7 @@ class Fit(object):
 
         .. note:: This method should not be used if there are no
           floating backgrounds.
+
         """
         if self._floating_backgrounds is None:
             raise ValueError("The _funct method can only be used " +
@@ -577,8 +583,8 @@ class Fit(object):
             to convolve.
 
         Returns:
-          spectrum (:class:`echidna.core.spectra.Spectra`): Convolved
-            spectrum, ready for applying further systematics or fitting.
+          (:class:`echidna.core.spectra.Spectra`): Convolved spectrum,
+            ready for applying further systematics or fitting.
         """
         # Locate spectrum to load from HDF5
         # Base directory should be set beforehand
@@ -612,7 +618,7 @@ class Fit(object):
             # Copy so original spectra is unchanged
             self._logger.debug("Adding Spectra with name %s to"
                                "_fixed_background" % spectrum.get_name())
-            spectrum = copy.deepcopy(spectrum)
+            spectrum = copy.copy(spectrum)
             if first:
                 first = False
                 if shrink:
@@ -698,8 +704,8 @@ class Fit(object):
         """ Sets the fixed background you want to fit.
 
         Args:
-          fixed_background (:class:`echidna.core.spectra.Spectra`):
-            The fixed background spectrum you want to fit.
+          fixed_background (:class:`echidna.core.spectra.Spectra`): The
+            fixed background spectrum you want to fit.
           shrink (bool, optional): If set to True (default) :meth:`shrink`
             method is called on the spectra shrinking it to the ROI.
         """
@@ -795,10 +801,11 @@ class Fit(object):
         """ Sets the signal you want to fit.
 
         Args:
-          signal (:class:`echidna.core.spectra.Spectra`):
-            The signal spectrum you want to fit.
-          shrink (bool, optional): If set to True (default) :meth:`shrink`
-            method is called on the spectra shrinking it to the ROI.
+          signal (:class:`echidna.core.spectra.Spectra`): The signal
+            spectrum you want to fit.
+          shrink (bool, optional): If set to True (default)
+            :meth:`shrink` method is called on the spectra shrinking
+            it to the ROI.
         """
         if shrink:
             self.shrink_spectra(signal)

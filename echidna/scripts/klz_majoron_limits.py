@@ -1,56 +1,70 @@
 """ KamLAND-Zen (plot-grab) Majoron limits script
 
-This script sets 90% confidence limit on the Majoron-emitting
-neutrinoless double beta decay modes (with spectral indices n = 1, 2, 3
-and 7), using plot-grabbed data from KamLAND-Zen.
+This script:
+
+  * Sets 90% confidence limit on the Majoron-emitting neutrinoless
+    double beta decay modes (with spectral indices n = 1, 2, 3 and 7),
+    using plot-grabbed data from KamLAND-Zen.
+
+Examples:
+  To use simply run the script and supply a YAML file detailing the
+  spectra (data, fixed, floating) to load::
+
+        $ python zero_nu_limit.py --from_file klz_majoron_limits_config.yaml
 
 The ``--upper_bound`` and ``--lower_bound`` flags from the command, can
 be used to return an estimate on the error introduced through the
 plot-grabbing process.
 
-Examples:
-  To use simply run the script and supply a YAML file detailing the
-    spectra (data, fixed, floating) to load::
-
-        $ python zero_nu_limit.py -c klz_majoron_limits_config.yaml
-
 .. note:: An example config would be::
 
-    data:
-        data/klz/v1.0.0/klz_data.hdf5
+        data:
+            data/klz/v1.0.0/klz_data.hdf5
 
-    fixed:
-        {data/klz/v1.0.0/total_b_g_klz.hdf5: 26647.1077395}
+    ::
 
-    floating:
-        [data/klz/v1.0.0/Xe136_2n2b_fig2.hdf5]
+        fixed:
+            {data/klz/v1.0.0/total_b_g_klz.hdf5: 26647.1077395}
 
-    signals:
-        {
-            klz_n1: data/klz/v1.0.0/Xe136_0n2b_n1_fig2.hdf5,
-            klz_n2: data/klz/v1.0.0/Xe136_0n2b_n2_fig2.hdf5,
-            klz_n3: data/klz/v1.0.0/Xe136_0n2b_n3_fig2.hdf5,
-            klz_n7: data/klz/v1.0.0/Xe136_0n2b_n7_fig2.hdf5}
+    ::
 
-    roi:
-        energy:
-            !!python/tuple [1.0, 3.0]
+        floating:
+            [data/klz/v1.0.0/Xe136_2n2b_fig2.hdf5]
 
-    per_bin:
-        true
+    ::
 
-    store_summary:
-        true
+        signals:
+            {
+                klz_n1: data/klz/v1.0.0/Xe136_0n2b_n1_fig2.hdf5,
+                klz_n2: data/klz/v1.0.0/Xe136_0n2b_n2_fig2.hdf5,
+                klz_n3: data/klz/v1.0.0/Xe136_0n2b_n3_fig2.hdf5,
+                klz_n7: data/klz/v1.0.0/Xe136_0n2b_n7_fig2.hdf5}
+
+    ::
+
+        roi:
+            energy:
+                !!python/tuple [1.0, 3.0]
+
+    ::
+
+        per_bin:
+            true
+
+    ::
+
+        store_summary:
+            true
 
 """
 import numpy
 
 import echidna.output as output
 import echidna.utilities as utilities
-import echidna.limit.test_statistic as test_statistic
-import echidna.core.spectra as spectra
+import echidna.fit.test_statistic as test_statistic
+from echidna.core.config import GlobalFitConfig
 import echidna.output.store as store
-import echidna.limit.fit as fit
+import echidna.fit.fit as fit
 from echidna.errors.custom_errors import CompatibilityError
 import echidna.calc.decay as decay
 import echidna.calc.constants as constants
@@ -90,8 +104,8 @@ def main(args):
     """ The limit setting script.
 
     Args:
-      signal (echidna.core.spectra.Spectra): Signal spectrum, for which
-        to set limit.
+      args (:class:`argparse.Namespace`): Arguments passed via command-
+        line
     """
     logger = utilities.start_logging()
 
@@ -147,14 +161,14 @@ def main(args):
 
     # Set fit_config
     if args_config.get("fit_config") is not None:
-        fit_config = spectra.GlobalFitConfig.load_from_file(
+        fit_config = GlobalFitConfig.load_from_file(
             args_config.get("fit_config"))
     else:  # Don't have any global fit parameters here - make blank config
         logger.warning("No fit_config path found - creating blank config")
         parameters = OrderedDict({})
         # The name set here will be the same name given to the GridSearch
         # created by the fitter, and the Summary class saved to hdf5.
-        fit_config = spectra.GlobalFitConfig(name, parameters)
+        fit_config = GlobalFitConfig(name, parameters)
     logger.info("Using GlobalFitConfig with the following parameters:")
     logging.getLogger("extra").info(fit_config.get_pars())
 
