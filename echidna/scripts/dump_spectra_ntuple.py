@@ -44,8 +44,7 @@ def read_and_dump_ntuple(fname, config_path, spectrum_name, save_path, bipo,
       outer_radius (float): Used for calculating the radial3 parameter.
         See :class:`echidna.core.dsextract` for details.
     """
-<<<<<<< HEAD
-    config = spectra.SpectraConfig.load_from_file(config_path)
+    config = SpectraConfig.load_from_file(config_path)
 
     if fv_radius:
         dim_types = set()
@@ -62,9 +61,6 @@ def read_and_dump_ntuple(fname, config_path, spectrum_name, save_path, bipo,
     else:
         cut_list = []
 
-=======
-    config = SpectraConfig.load_from_file(config_path)
->>>>>>> origin/master
     if outer_radius:
         if "radial3" not in config.get_dims():
             raise ValueError("Outer radius passed as an command line arg "
