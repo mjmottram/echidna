@@ -2,7 +2,7 @@
 """
 import numpy
 
-from echidna.limit.fit_results import FitResults
+from echidna.fit.fit_results import FitResults
 
 import copy
 import abc
@@ -13,19 +13,24 @@ class Minimiser(object):
 
     Args:
       name (string): Name of minimiser.
+      per_bin (bool, optional): Flag if minimiser should expect a
+        test statistic value per-bin.
 
     Attributes:
       _name (string): Name of minimiser.
+      _per_bin (bool, optional): Flag if minimiser should expect a
+        test statistic value per-bin.
       _type (string): Type of minimiser, e.g. GridSearch
     """
     __metaclass__ = abc.ABCMeta  # Only required for python 2
 
-    def __init__(self, name):
+    def __init__(self, name, per_bin=False):
         self._name = name
         self._type = None  # No type for base class
+        self._per_bin = per_bin
 
     @abc.abstractmethod
-    def minimise(self, funct):
+    def minimise(self, funct, test_statistic):
         """ Abstract base class method to override.
 
         Args:
@@ -36,54 +41,80 @@ class Minimiser(object):
             parameter values. E.g. ``def funct(*args)``. Within the
             echidna framework, the :meth:`echidna.limit.fit.Fit.funct`
             method is the recommened callable to use here.
+          test_statistic (:class:`echidna.limit.test_statistic`): The
+            test_statistic object used to calcualte the test statistics.
 
         Returns:
           float: Minimum value found during minimisation.
         """
-        pass
+        raise NotImplementedError("The minimise method can only be used "
+                                  "when overridden in a derived class")
 
 
 class GridSearch(FitResults, Minimiser):
     """ A grid-search minimisation algorithm.
 
     Although this is minimisation, it makes more sense for the class to
-    inherit from :class:`FitResults`, as the :attr:`_data` attribute is
+    inherit from :class:`FitResults`, as the :attr:`_stats` attribute is
     the same in both classes, as is the :attr:`_fit_config`.
 
     Args:
-      fit_config (:class:`echidna.limit.fit.FitConfig`): Configuration
-        for fit. This should be a direct copy of the
-        :class:`echidna.limit.fit.FitConfig` object in
-        :class:`echidna.limit.fit.Fit`.
+      fit_config (:class:`echidna.core.spectra.GlobalFitConfig`): Configuration
+        for fit. This should be a direct copy of the ``FitConfig``
+        in :class:`echidna.limit.fit.Fit`.
+      spectra_config (:class:`echidna.core.spectra.SpectraConfig`): The
+        for spectra configuration. The recommended spectrum config to
+        include here is the one from the data spectrum, to which you
+        are fitting.
       name (str, optional): Name of this :class:`FitResults` class
         instance. If no name is supplied, name from fit_results will be
         taken and appended with "_results".
+      per_bin (bool, optional): Flag if minimiser should expect a
+        test statistic value per-bin.
       use_numpy (bool, optional): Flag to indicate whether to use the
         built-in numpy functions for minimisation and locating the
         minimum, or use the :meth:`find_minimum` method. Default is to
         use numpy.
 
     Attributes:
-      _fit_config (:class:`echidna.limit.fit.FitConfig`): Configuration
-        for fit. This should be a direct copy of the
-        :class:`echidna.limit.fit.FitConfig` object in
-        :class:`echidna.limit.fit.Fit`.
+      _fit_config (:class:`echidna.core.spectra.GlobalFitConfig`): The
+        configuration for fit. This should be a direct copy of the
+        ``FitConfig`` in :class:`echidna.limit.fit.Fit`.
+      _spectra_config (:class:`echidna.core.spectra.SpectraConfig`): The
+        for spectra configuration. The recommended spectrum config to
+        include here is the one from the data spectrum, to which you
+        are fitting.
       _name (string): Name of this :class:`GridSearch` class instance.
-      _data (:class:`numpy.ndarray`): Array of values of the test
+      _stats (:class:`numpy.ndarray`): Array of values of the test
         statistic calculated during the fit.
+      _penalties (:class:`numpy.ndarray`): Array of values of the
+        penalty terms calculated during the fit.
+      _minimum_value (float): Minimum value of the array returned by
+        :meth:`get_fit_data`.
+      _minimum_position (tuple): Position of the test statistic minimum
+        value. The tuple contains the indices along each fit parameter
+        (dimension), acting as coordinates of the position of the
+        minimum.
+      _resets (int): Number of times the grid has been reset.
+      _type (string): Type of minimiser, e.g. GridSearch
+      _per_bin (bool, optional): Flag if minimiser should expect a
+        test statistic value per-bin.
       _use_numpy (bool, optional): Flag to indicate whether to use the
         built-in numpy functions for minimisation and locating the
         minimum, or use the :meth:`find_minimum` method. Default is to
         use numpy.
     """
-    def __init__(self, fit_config, name=None, use_numpy=True):
-        super(GridSearch, self).__init__(fit_config, name=None)  # FitResults
+    def __init__(self, fit_config, spectra_config,
+                 name=None, per_bin=False, use_numpy=True):
+        # FitResults
+        super(GridSearch, self).__init__(fit_config, spectra_config, name=None)
         # Minimiser __init__ won't be called, so replicate functionality
         self._name = name
         self._type = GridSearch
+        self._per_bin = per_bin
         self._use_numpy = use_numpy
 
-    def minimise(self, funct):
+    def minimise(self, funct, test_statistic):
         """ Method to perform the minimisation.
 
         Args:
@@ -94,6 +125,12 @@ class GridSearch(FitResults, Minimiser):
             parameter values. E.g. ``def funct(*args)``. Within the
             echidna framework, the :meth:`echidna.limit.fit.Fit.funct`
             method is the recommened callable to use here.
+          test_statistic (:class:`echidna.limit.test_statistic`): The
+            test_statistic object used to calcualte the test statistics.
+
+        Attributes:
+          _minimum_value (float): Minimum value of test statistic found.
+          _minimum_position (tuple): Position of minimum.
 
         Returns:
           float: Minimum value found during minimisation.
@@ -101,28 +138,51 @@ class GridSearch(FitResults, Minimiser):
         # Loop over all possible combinations of fit parameter values
         for values, indices in self._get_fit_par_values():
             # Call funct and pass array to it
-            result = funct(*values)
-            # Fill result into grid
-            self._data[tuple(indices)] = result
+            result, penalty = funct(*values)
+
+            # Check result is of correct form
+            if self._per_bin:  # expecting numpy.ndarray
+                if not isinstance(result, numpy.ndarray):
+                    raise TypeError("Expecting result of type numpy.ndarray "
+                                    "(not %s), for per_bin enabled" %
+                                    type(result))
+                    expected_shape = self._spectra_config.get_shape()
+                    if result.shape != expected_shape:
+                        raise ValueError(
+                            "Expecting result to be numpy array with shape "
+                            "%s (not %s), for per_bin enabled" %
+                            (str(expected_shape), str(result.shape)))
+            self.set_stat(result, tuple(indices))
+            self.set_penalty_term(penalty, tuple(indices))
 
         # Now grid is filled minimise
-        self._minimum = copy.copy(self._data)
+        minimum = self.get_stats()
 
         if self._use_numpy:
-            self._minimum = numpy.nanmin(self._minimum)
             # Set best_fit values
             # This is probably not the most efficient way of doing this
-            best_fit = numpy.argmin(self._data)
-            best_fit = numpy.unravel_index(best_fit, self._data.shape)
+            position = numpy.argmin(minimum)
+            position = numpy.unravel_index(position, minimum.shape)
+            minimum = numpy.nanmin(minimum)
         else:  # Use find_minimum method
-            self._minimum, best_fit = self.find_minimum(self._minimum)
+            minimum, position = self.find_minimum(minimum)
 
-        for index, par in zip(best_fit, self._fit_config.get_pars()):
+        for index, par in zip(position, self._fit_config.get_pars()):
             parameter = self._fit_config.get_par(par)
+            best_fit = parameter.get_value_at(index)
+            sigma = parameter.get_sigma()
+            prior = parameter.get_prior()
             parameter.set_best_fit(parameter.get_value_at(index))
+            if sigma is not None:
+                parameter.set_penalty_term(
+                    test_statistic.get_penalty_term(best_fit, prior, sigma))
+            else:  # penalty term = 0
+                parameter.set_penalty_term(0.)
 
-        # Return minimum to limit setting
-        return self._minimum
+        self.set_minimum_value(minimum)
+        self.set_minimum_position(position)  # save position of minimum
+        # Return minimum to fitting
+        return minimum
 
     def _update_coords(self, coords, new_coords):
         """ Internal method called by :meth:`find_minimum` to update the

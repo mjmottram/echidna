@@ -16,13 +16,14 @@ Examples:
   To specify a save directory, include a -s flag followed by path to
   the required save destination.
 """
-import argparse
-import csv
 import echidna.output.store as store
-import echidna.core.spectra as spectra
+from echidna.core.config import SpectraConfig
 import echidna.core.fill_spectrum as fill_spectrum
 import echidna.core.dsextract as dsextract
 import echidna.output.plot_root as plot
+
+import argparse
+import csv
 
 
 def read_and_dump_ntuple(fname, config_path, spectrum_name, save_path, bipo,
@@ -43,6 +44,7 @@ def read_and_dump_ntuple(fname, config_path, spectrum_name, save_path, bipo,
       outer_radius (float): Used for calculating the radial3 parameter.
         See :class:`echidna.core.dsextract` for details.
     """
+<<<<<<< HEAD
     config = spectra.SpectraConfig.load_from_file(config_path)
 
     if fv_radius:
@@ -60,6 +62,9 @@ def read_and_dump_ntuple(fname, config_path, spectrum_name, save_path, bipo,
     else:
         cut_list = []
 
+=======
+    config = SpectraConfig.load_from_file(config_path)
+>>>>>>> origin/master
     if outer_radius:
         if "radial3" not in config.get_dims():
             raise ValueError("Outer radius passed as an command line arg "
@@ -85,7 +90,7 @@ def plot_spectrum(spec, config):
     Args:
       Spec (:class:`echidna.core.spectra.Spectra`): Spectrum object
         to be plotted
-      config (:class:`echidna.core.spectra.Config`): configuration object
+      config (:class:`SpectraConfig`): configuration object
     """
     for v in config.get_pars():
         plot.plot_projection(spec, v)
@@ -131,13 +136,11 @@ if __name__ == "__main__":
     parser.set_defaults(bipo=False)
     args = parser.parse_args()
 
-
-
-    if args.read_text_file:      # If passed text file: read, format and dump
+    if args.read_text_file:  # If passed text file: read, format and dump
         path_list, half_life_list = read_tab_delim_file(args.read_text_file)
         for fname, half_life in zip(path_list, half_life_list):
             spectrum_name = fname[fname.rfind('/', 0, -1)+1:]
-            read_and_dump_ntuple(fname, config, spectrum_name,
+            read_and_dump_ntuple(fname, args.config, spectrum_name,
                                  args.save_path, args.bipo, args.fv_radius,
                                  args.outer_radius)
     else:  # If args passed directly, deal with them
