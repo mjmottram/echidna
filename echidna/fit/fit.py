@@ -141,19 +141,21 @@ class Fit(object):
 
         # Try to set minimiser and fit_results
         # Will only work if check_all_spectra passes.
-        try:
-            self.set_minimiser(minimiser)
-        except CompatibilityError as detail:
-            self._minimiser = None
-            self._logger.warning("Minimiser could not be set because: %s" %
-                                 detail)
-
-        try:
-            self.set_fit_results(fit_results)
-        except CompatibilityError as detail:
-            self._fit_results = None
-            self._logger.warning("Fit results could not be set because: %s" %
-                                 detail)
+        if minimiser is not None:
+            try:
+                self.set_minimiser(minimiser)
+            except CompatibilityError as detail:
+                self._minimiser = None
+                self._logger.warning("Minimiser could not be set because: %s" %
+                                     detail)
+                
+        if fit_results is not None:
+            try:
+                self.set_fit_results(fit_results)
+            except CompatibilityError as detail:
+                self._fit_results = None
+                self._logger.warning("Fit results could not be set because: %s" %
+                                     detail)
 
         self._use_pre_made = use_pre_made
         self._pre_made_base_dir = pre_made_base_dir
@@ -286,19 +288,20 @@ class Fit(object):
         # Check minimiser and fit results
         if self._minimiser is None:
             raise AttributeError("Minimiser has not been set.")
-        if self._fit_results is None:
-            raise AttributeError("Fit results has not been set.")
+        #if self._fit_results is None:
+        #    raise AttributeError("Fit results has not been set.")
 
         # Check per_bin propagation
         if self._per_bin:
             if not self._minimiser._per_bin:
                 raise ValueError("Expected per_bin True flag in minimiser")
+            if not self._test_statistic._per_bin:
+                raise ValueError("Expected per_bin True flag in test_statistic")
         else:
             if self._minimiser._per_bin:
-                raise ValueError("Unexpected per_bin True flag in minimiser")
-
-        if not self._test_statistic._per_bin:
-            raise ValueError("Expected per_bin True flag in test_statistic")
+                raise ValueError("Unexpected per_bin False flag in minimiser")
+            if self._test_statistic._per_bin:
+                raise ValueError("Expected per_bin False flag in test_statistic")
 
         self._checked = True
 
@@ -534,6 +537,7 @@ class Fit(object):
 
             # Spectrum should now be fully convolved/scaled
             # Shrink to roi
+            # NOTE - it's the shrinking that makes things slow...
             self.shrink_spectra(spectrum)
             # and then add projection to expected spectrum
             if expected is not None:
@@ -751,6 +755,7 @@ class Fit(object):
           IndexError: If fit config contains no parameters.
         """
         self.check_all_spectra()  # All spectra should be set and checked first
+        print "Minimiser:", minimiser
         if minimiser:
             self._minimiser = minimiser
             self._logger.debug("Setting %s as minimiser" %

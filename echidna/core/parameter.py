@@ -176,10 +176,25 @@ class FitParameter(Parameter):
     def __init__(self, name, prior, sigma, low, high, bins, dimension=None,
                  values=None, current_value=None, penalty_term=None,
                  best_fit=None, logscale=None, base=numpy.e,
-                 logscale_deviation=None):
+                 logscale_deviation=None, **kwargs):
         """Initialise FitParameter class
         """
-        super(FitParameter, self).__init__("fit", name, low, high, bins)
+        # No call to super - no assumption that this is a binned parameter
+        self._type = "fit"
+        self._name = name
+        try:
+            self._low = float(low)
+        except:
+            self._low = None
+        try:
+            self._high = float(high)
+        except:
+            self._high = None
+        try:
+            self._bins = int(bins)
+        except:
+            self._bins = None
+
         self._logger = logging.getLogger("fit_parameter")
         self._prior = float(prior)
         if sigma is None:
@@ -209,6 +224,9 @@ class FitParameter(Parameter):
             self._logger.info("Setting logscale_deviation %s for parameter %s"
                               % (logscale_deviation, name))
             self._logscale_deviation = logscale_deviation
+        # Set any extra optional items
+        for k, v in kwargs.iteritems():
+            setattr(self, k, v)
 
     @abc.abstractmethod
     def apply_to(self, spectrum):
@@ -233,6 +251,8 @@ class FitParameter(Parameter):
           ValueError: If prior is not in the values array.
         """
         values = self.get_values()
+        if not values: #Don't do anything if this isn't a binned parameter!
+            return
         if not numpy.any(numpy.around(values / self._prior, 12) ==
                          numpy.around(1., 12)):
             log_text = ""
@@ -415,7 +435,8 @@ class FitParameter(Parameter):
           (:class:`numpy.array`): Array of parameter values to test in
             fit. Stored in :attr:`_values`.
         """
-        if self._values is None:  # Generate array of values
+        if self._values is None and (self._bins and self._low and self._high):
+            # Generate array of values, but only if its a binned parameter
             if self._logscale:
                 # Create an array that is equally spaced in log-space
                 self._logger.info("Creating logscale array of values "
@@ -620,8 +641,8 @@ class RateParameter(FitParameter):
         rather than a linear array.
       _base (float): Base to use when creating an logscale array.
     """
-    def __init__(self, name, prior, sigma, low, high,
-                 bins, logscale=None, base=numpy.e,
+    def __init__(self, name, prior, sigma=None, low=None, high=None,
+                 bins=None, logscale=None, base=numpy.e,
                  logscale_deviation=None, **kwargs):
         super(RateParameter, self).__init__(
             name, prior, sigma, low, high, bins, logscale=logscale,

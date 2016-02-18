@@ -107,7 +107,7 @@ class GridSearch(FitResults, Minimiser):
     def __init__(self, fit_config, spectra_config,
                  name=None, per_bin=False, use_numpy=True):
         # FitResults
-        super(GridSearch, self).__init__(fit_config, spectra_config, name=None)
+        super(GridSearch, self).__init__(fit_config, spectra_config)
         # Minimiser __init__ won't be called, so replicate functionality
         self._name = name
         self._type = GridSearch
@@ -324,23 +324,30 @@ class MetropolisHastings(Minimiser):
     """MetropolisHastings MCMC minimisation
     """
 
-    def __init__(self, burn_in = 5000, niter = 10000, thin_factor = 10):
+    def __init__(self, fit_config, spectra_config, name = None,
+                 burn_in = 5000, niter = 10000, thin_factor = 10):
         super(MetropolisHastings, self).__init__(name = 'metropolis_hastings')
         self._type = MetropolisHastings
         # Force set the defaults for now
         self._burn_in = burn_in
         self._niter = niter
         self._thin_factor = thin_factor
+        self._per_bin = False
+        self._fit_config = fit_config
 
-    def setup(self, start_point, step_size):
-        self._start_point = start_point
-        self._step_size = step_size
+    def get_name(self):
+        return "MetHast"
 
-    def minimise(self, funct):
+    def minimise(self, funct, test_statistic):
         """Minimise the docstrings!
         """
-        current_par = self._start_point
-        current_stat = funct(current_par)
+        # Choose a starting point
+        current_par = [self._fit_config.get_par(p)._current_value \
+                       for p in self._fit_config.get_pars()]
+        step_size = [self._fit_config.get_par(p).step_size \
+                     for p in self._fit_config.get_pars()]
+        #current_par = self._start_point
+        current_stat, current_penalty = funct(*current_par)
         acceptance = 0
         sample = [] # could reserve points
         best_stat = None
@@ -349,8 +356,8 @@ class MetropolisHastings(Minimiser):
         for i in range(self._niter):
 
             # Random jump
-            test_par = numpy.random.normal(current_par, self._step_size)
-            test_stat = funct(test_par)
+            test_par = numpy.random.normal(current_par, step_size)
+            test_stat, test_penalty = funct(*test_par)
             
             # Test statistic should always be minimised
             # LL methods should return -ve stat
