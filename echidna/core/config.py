@@ -772,11 +772,7 @@ class SpectraConfig(Config):
         """
         dims = []
         for par in sorted(self._parameters.keys()):
-            par = par.split('_')[:-1]
-            dim = ""
-            for entry in par:
-                dim += entry+"_"
-            dims.append(dim[:-1])
+            dims.append(par.rpartition("_")[0])
         return dims
 
     def get_dim(self, par):
@@ -789,10 +785,7 @@ class SpectraConfig(Config):
         Returns:
           The dimension of par
         """
-        dim = ""
-        for entry in par.split('_')[:-1]:
-            dim += entry+"_"
-        return dim[:-1]
+        return par.rpartition("_")[0]
 
     def get_dim_type(self, dim):
         """Returns the type of the dimension i.e. mc, reco or truth.
@@ -807,10 +800,7 @@ class SpectraConfig(Config):
           string: The type of the dimension (mc, reco or truth)
         """
         for par in sorted(self._parameters.keys()):
-            par_split = par.split('_')[:-1]
-            cur_dim = ""
-            for entry in par_split:
-                cur_dim += entry+"_"
-            if cur_dim[:-1] == dim:
-                return str(par.split('_')[-1])
+            cur_dim, _, dim_type = par.rpartition("_")
+            if cur_dim == dim:
+                return dim_type
         raise IndexError("No %s dimension in spectra" % dim)
