@@ -27,14 +27,47 @@ class Parameter(object):
 
     """
 
-    def __init__(self, type_name, name, low, high, bins):
+    def __init__(self, type_name, name, binned=None, floating=None,
+                 low=None, high=None, bins=None, logscale=None,
+                 base=numpy.e, logscale_deviation=None, **kwargs):
         """ Initialise config class
         """
         self._type = type_name
         self._name = name
-        self._low = float(low)
-        self._high = float(high)
-        self._bins = int(bins)
+        if (not binned and not floating):
+            if low and high and bins:
+                # Assume we want a binned parameter
+                self._binned = True
+            else:
+                raise ValueError("Parameter must be EITHER binned or floating")
+        elif (binned and floating):
+            raise ValueError("Parameter must be EITHER binned or floating")
+        else:
+            self._binned = binned
+            self._floating = floating
+        if self._binned:
+            # Setup the binned parameters
+            self._low = low
+            self._high = high
+            self._bins = bins
+            self._values = None
+            self._logscale = logscale
+            self._logscale_deviation = None
+            self._base = base
+            if logscale:
+                self._logger.info("Setting logscale %s for parameter %s" %
+                                  (logscale, name))
+                logging.getLogger("extra").info(" --> with base: %.4g" % base)
+                if logscale_deviation is not None:
+                    self._logger.warning("Recieved logscale_deviation flag that "
+                                         "will not have any effect")
+            elif logscale_deviation:
+                self._logger.info("Setting logscale_deviation %s for parameter %s"
+                                  % (logscale_deviation, name))
+                self._logscale_deviation = logscale_deviation
+        # Finally add any extra parameters
+        for k, v in kwargs.iteritems():
+            setattr(self, k, v)
 
     def get_bins(self):
         """ Get the number of bins.
@@ -43,6 +76,66 @@ class Parameter(object):
           int: Number of bins for this parameter.
         """
         return self._bins
+
+    def get_bin_boundaries(self):
+        """ Returns an array of bin boundaries, based on the :attr:`_low`,
+        :attr:`_high` and :attr:`_bins` parameters, and any flags
+        (:attr:`_logscale` or :attr:`_logscale_deviation`) that have
+        been applied.
+
+        Returns:
+          (:class:`numpy.array`): Array of bin_baoundaries for the
+            parameter values stored in :attr:`_values`.
+        """
+        if self._bin_boundaries is None:  # Generate array of values
+            if self._logscale:
+                if self._low <= 0.:  # set low = -log(high)
+                    low = -numpy.log(self._high)
+                    logging.warning("Correcting fit parameter value <= 0.0")
+                    logging.debug(" --> changed to %.4g (previously %.4g)" %
+                                  (numpy.exp(low), self._low))
+                else:
+                    low = numpy.log(self._low)
+                high = numpy.log(self._high)
+                width = (numpy.log(high) - numpy.log(low)) / int(self._bins)
+                self._bin_boundaries = numpy.logspace(
+                    low - 0.5*width, high + 0.5*width,
+                    num=self._bins+1, base=numpy.e)
+            elif self._logscale_deviation:
+                delta = self._high - self._prior
+                width = numpy.log(delta + 1.) / int(self._bins / 2)
+                deltas = numpy.linspace(
+                    0.5 * width, numpy.log(delta + 1.) + 0.5*width,
+                    num=int((self._bins + 1) / 2))
+                pos = self._prior + numpy.exp(deltas) - 1.
+                neg = self._prior - numpy.exp(deltas[::-1]) + 1.
+                self._bin_boundaries = numpy.append(neg, pos)
+            else:
+                width = self.get_width()
+                self._bin_boundaries = numpy.linspace(self._low + 0.5*width,
+                                                      self._high + 0.5*width,
+                                                      self._bins + 1)
+        return self._bin_boundaries
+
+    def get_value_index(self, value):
+        """ Get the index corresponding to a given parameter value.
+
+        Args:
+          value (float): Parameter value for which to get corresponding
+            index.
+
+        Returns:
+          int: Index of corresponding to the given parameter value.
+
+        .. warning:: If there are multiple occurences of ``value`` in
+          the array of parameter values, only the index of the first
+          occurence will be returned.
+        """
+        indices = numpy.where(self.get_values() == value)[0]
+        if len(indices) == 0:
+            raise ValueError("No value %.2g found in parameter values " +
+                             "for parameter %s." % (value, self._name))
+        return int(indices[0])
 
     def get_high(self):
         """ Get the high value of the parameter
@@ -76,13 +169,79 @@ class Parameter(object):
         """
         return self._type
 
+    def get_binned_values(self):
+        """ Returns an array of values, based on the :attr:`_low`,
+        :attr:`_high` and :attr:`_bins` parameters, and any flags
+        (:attr:`_logscale` or :attr:`_logscale_deviation`) that have
+        been applied.
+
+        .. warning:: Calling this method with the
+          :attr:`logscale_deviation` flag enabled, may alter the value
+          of :attr:`_low`, as this scale must be symmetric about the
+          prior.
+
+        Returns:
+          (:class:`numpy.array`): Array of parameter values to test in
+            fit. Stored in :attr:`_values`.
+        """
+        if self._values is None:  # Generate array of values
+            if self._logscale:
+                # Create an array that is equally spaced in log-space
+                self._logger.info("Creating logscale array of values "
+                                  "for parameter %s" % self._name)
+                if self._low <= 0.:  # set low = -log(high)
+                    low = -numpy.log(self._high)
+                    logging.warning("Correcting fit parameter value <= 0.0")
+                    logging.debug(" --> changed to %.4g (previously %.4g)" %
+                                  (numpy.exp(low), self._low))
+                else:
+                    low = numpy.log(self._low)
+                high = numpy.log(self._high)
+                self._values = numpy.logspace(low, high, num=self._bins,
+                                              base=numpy.e)
+            elif self._logscale_deviation:
+                # Create an array with the prior as the central value, and
+                # then absolute deviations from the prior that are
+                # linearly spaced in log-space.
+                self._logger.info("Creating logscale_deviation array of "
+                                  "values for parameter %s" % self._name)
+                delta = self._high - self._prior
+                deltas = numpy.linspace(0., numpy.log(delta + 1.),
+                                        num=(self._bins + 1.) / 2.)
+                pos = self._prior + numpy.exp(deltas[1:]) - 1.
+                neg = self._prior - numpy.exp(deltas[::-1]) + 1.
+                self._values = numpy.append(neg, pos)
+                if not numpy.allclose(self._values[0], self._low):
+                    low = self._values[0]
+                    self._logger.warning(
+                        "Changing value of attr _low, from %.4g to %.4g, "
+                        "for parameter %s" % (self._low, low, self._name))
+            else:  # Create a normal linear array
+                self._logger.info("Creating linear array of values "
+                                  "for parameter %s" % self._name)
+                self._values = numpy.linspace(self._low,
+                                              self._high, self._bins)
+        return self._values
+
+    def get_values(self):
+        if self.is_binned():
+            return self.get_binned_values()
+        else:
+            return self._prior
+
     def get_width(self):
         """Get the width of the binning for the parameter
 
         Returns:
           float: Bin width.
         """
-        return (self._high - self._low) / float(self._bins)
+        return self.binnned.get_width()
+
+    def is_binned(self):
+        return self._binned != None
+
+    def is_floating(self):
+        return self._floating != None
 
     def to_dict(self, basic=False):
         """ Represent the properties of the parameter in a dictionary.
@@ -98,9 +257,12 @@ class Parameter(object):
             dictionary.
         """
         parameter_dict = {}
-        parameter_dict["low"] = self._low
-        parameter_dict["high"] = self._high
-        parameter_dict["bins"] = self._bins
+        if self._binned:
+            parameter_dict["low"] = self._low
+            parameter_dict["high"] = self._high
+            parameter_dict["bins"] = self._bins
+        elif self._floating:
+            pass
         return parameter_dict
 
 
@@ -142,8 +304,6 @@ class FitParameter(Parameter):
       bins (int): The number of steps between low and high values
       dimension (string, optional): The spectral dimension to which the
         fit parameter applies.
-      values (:class:`numpy.array`, optional): Array of parameter
-        values to test in fit.
       best_fit (float, optional): Best-fit value calculated by fit.
       penalty_term (float, optional): Penalty term value at best fit.
       logscale (bool, optional): Flag to create an logscale array of
@@ -173,42 +333,24 @@ class FitParameter(Parameter):
 
     """
 
-    def __init__(self, name, prior, sigma, low, high, bins, dimension=None,
-                 values=None, current_value=None, penalty_term=None,
-                 best_fit=None, logscale=None, base=numpy.e,
-                 logscale_deviation=None):
+    def __init__(self, name, prior, sigma=None, binned=None,
+                 floating=None, dimension=None, current_value=None,
+                 penalty_term=None, best_fit=None, **kwargs):
         """Initialise FitParameter class
         """
-        super(FitParameter, self).__init__("fit", name, low, high, bins)
+        super(FitParameter, self).__init__("fit", name, binned, floating, **kwargs)
         self._logger = logging.getLogger("fit_parameter")
-        self._prior = float(prior)
-        if sigma is None:
+        self._prior = prior
+        self._sigma = sigma
+        self._dimension = dimension
+        self._current_value = current_value
+        self._penalty_term = penalty_term
+        self._best_fit = best_fit
+        if self._sigma is None:
             self._logger.warning(
                 "Setting sigma explicitly as None for %s - "
                 "No penalty term will be added for this parameter!" % name)
-        self._sigma = sigma
-        self._dimension = dimension
-        self._values = values
-        self._current_value = current_value
-        self._best_fit = best_fit
-        self._penalty_term = penalty_term
-        self._logscale = None
-        self._base = None
-        self._logscale_deviation = None
-        self._bin_boundaries = None
-        if logscale:
-            self._logger.info("Setting logscale %s for parameter %s" %
-                              (logscale, name))
-            logging.getLogger("extra").info(" --> with base: %.4g" % base)
-            if logscale_deviation is not None:
-                self._logger.warning("Recieved logscale_deviation flag that "
-                                     "will not have any effect")
-            self._logscale = logscale
-            self._base = base
-        elif logscale_deviation:
-            self._logger.info("Setting logscale_deviation %s for parameter %s"
-                              % (logscale_deviation, name))
-            self._logscale_deviation = logscale_deviation
+
 
     @abc.abstractmethod
     def apply_to(self, spectrum):
@@ -232,17 +374,18 @@ class FitParameter(Parameter):
         Raises:
           ValueError: If prior is not in the values array.
         """
-        values = self.get_values()
-        if not numpy.any(numpy.around(values / self._prior, 12) ==
-                         numpy.around(1., 12)):
-            log_text = ""
-            log_text += "Values: %s\n" % str(values)
-            log_text += "Prior: %.4g\n" % self._prior
-            logging.getLogger("extra").warning("\n%s\n" % log_text)
-            raise ValueError("Prior not in values array. "
-                             "This can be achieved with an odd number "
-                             "of bins and symmetric low and high values "
-                             "about the prior.")
+        if self.is_binned():
+            values = self.get_values()
+            if not numpy.any(numpy.around(values / self._prior, 12) ==
+                             numpy.around(1., 12)):
+                log_text = ""
+                log_text += "Values: %s\n" % str(values)
+                log_text += "Prior: %.4g\n" % self._prior
+                logging.getLogger("extra").warning("\n%s\n" % log_text)
+                raise ValueError("Prior not in values array. "
+                                 "This can be achieved with an odd number "
+                                 "of bins and symmetric low and high values "
+                                 "about the prior.")
 
     def get_best_fit(self):
         """
@@ -258,46 +401,6 @@ class FitParameter(Parameter):
             raise ValueError("Best fit value for parameter" +
                              self._name + " has not been set")
         return self._best_fit
-
-    def get_bin_boundaries(self):
-        """ Returns an array of bin boundaries, based on the :attr:`_low`,
-        :attr:`_high` and :attr:`_bins` parameters, and any flags
-        (:attr:`_logscale` or :attr:`_logscale_deviation`) that have
-        been applied.
-
-        Returns:
-          (:class:`numpy.array`): Array of bin_baoundaries for the
-            parameter values stored in :attr:`_values`.
-        """
-        if self._bin_boundaries is None:  # Generate array of values
-            if self._logscale:
-                if self._low <= 0.:  # set low = -log(high)
-                    low = -numpy.log(self._high)
-                    logging.warning("Correcting fit parameter value <= 0.0")
-                    logging.debug(" --> changed to %.4g (previously %.4g)" %
-                                  (numpy.exp(low), self._low))
-                else:
-                    low = numpy.log(self._low)
-                high = numpy.log(self._high)
-                width = (numpy.log(high) - numpy.log(low)) / int(self._bins)
-                self._bin_boundaries = numpy.logspace(
-                    low - 0.5*width, high + 0.5*width,
-                    num=self._bins+1, base=numpy.e)
-            elif self._logscale_deviation:
-                delta = self._high - self._prior
-                width = numpy.log(delta + 1.) / int(self._bins / 2)
-                deltas = numpy.linspace(
-                    0.5 * width, numpy.log(delta + 1.) + 0.5*width,
-                    num=int((self._bins + 1) / 2))
-                pos = self._prior + numpy.exp(deltas) - 1.
-                neg = self._prior - numpy.exp(deltas[::-1]) + 1.
-                self._bin_boundaries = numpy.append(neg, pos)
-            else:
-                width = self.get_width()
-                self._bin_boundaries = numpy.linspace(self._low + 0.5*width,
-                                                      self._high + 0.5*width,
-                                                      self._bins + 1)
-        return self._bin_boundaries
 
     def get_current_value(self):
         """
@@ -400,91 +503,6 @@ class FitParameter(Parameter):
         """
         return self._sigma
 
-    def get_values(self):
-        """ Returns an array of values, based on the :attr:`_low`,
-        :attr:`_high` and :attr:`_bins` parameters, and any flags
-        (:attr:`_logscale` or :attr:`_logscale_deviation`) that have
-        been applied.
-
-        .. warning:: Calling this method with the
-          :attr:`logscale_deviation` flag enabled, may alter the value
-          of :attr:`_low`, as this scale must be symmetric about the
-          prior.
-
-        Returns:
-          (:class:`numpy.array`): Array of parameter values to test in
-            fit. Stored in :attr:`_values`.
-        """
-        if self._values is None:  # Generate array of values
-            if self._logscale:
-                # Create an array that is equally spaced in log-space
-                self._logger.info("Creating logscale array of values "
-                                  "for parameter %s" % self._name)
-                if self._low <= 0.:  # set low = -log(high)
-                    low = -numpy.log(self._high)
-                    logging.warning("Correcting fit parameter value <= 0.0")
-                    logging.debug(" --> changed to %.4g (previously %.4g)" %
-                                  (numpy.exp(low), self._low))
-                else:
-                    low = numpy.log(self._low)
-                high = numpy.log(self._high)
-                self._values = numpy.logspace(low, high, num=self._bins,
-                                              base=numpy.e)
-            elif self._logscale_deviation:
-                # Create an array with the prior as the central value, and
-                # then absolute deviations from the prior that are
-                # linearly spaced in log-space.
-                self._logger.info("Creating logscale_deviation array of "
-                                  "values for parameter %s" % self._name)
-                delta = self._high - self._prior
-                deltas = numpy.linspace(0., numpy.log(delta + 1.),
-                                        num=(self._bins + 1.) / 2.)
-                pos = self._prior + numpy.exp(deltas[1:]) - 1.
-                neg = self._prior - numpy.exp(deltas[::-1]) + 1.
-                self._values = numpy.append(neg, pos)
-                if not numpy.allclose(self._values[0], self._low):
-                    low = self._values[0]
-                    self._logger.warning(
-                        "Changing value of attr _low, from %.4g to %.4g, "
-                        "for parameter %s" % (self._low, low, self._name))
-            else:  # Create a normal linear array
-                self._logger.info("Creating linear array of values "
-                                  "for parameter %s" % self._name)
-                self._values = numpy.linspace(self._low,
-                                              self._high, self._bins)
-        return self._values
-
-    def get_value_at(self, index):
-        """ Access the parameter value at a given index in the array.
-
-        Args:
-          index (int): Index of parameter value requested.
-
-        Returns:
-          float: Parameter value at the given index.
-        """
-        return self.get_values()[index]
-
-    def get_value_index(self, value):
-        """ Get the index corresponding to a given parameter value.
-
-        Args:
-          value (float): Parameter value for which to get corresponding
-            index.
-
-        Returns:
-          int: Index of corresponding to the given parameter value.
-
-        .. warning:: If there are multiple occurences of ``value`` in
-          the array of parameter values, only the index of the first
-          occurence will be returned.
-        """
-        indices = numpy.where(self.get_values() == value)[0]
-        if len(indices) == 0:
-            raise ValueError("No value %.2g found in parameter values " +
-                             "for parameter %s." % (value, self._name))
-        return int(indices[0])
-
     def set_best_fit(self, best_fit):
         """ Set value for :attr:`_best_fit`.
 
@@ -503,6 +521,8 @@ class FitParameter(Parameter):
 
     def set_par(self, **kwargs):
         """Set a fitting parameter's values after initialisation.
+
+        Allow anything for now!
 
         Args:
           kwargs (dict): keyword arguments
@@ -524,6 +544,8 @@ class FitParameter(Parameter):
         Raises:
           TypeError: Unknown variable type passed as a kwarg.
         """
+        #for k, v in kwargs.iteritems():
+        #    setattr(self, k, v)
         for kw in kwargs:
             if kw == "prior":
                 self._prior = float(kwargs[kw])
@@ -583,18 +605,19 @@ class FitParameter(Parameter):
         # Add basic attributes
         parameter_dict["prior"] = self._prior
         parameter_dict["sigma"] = self._sigma
-        parameter_dict["low"] = self._low
-        parameter_dict["high"] = self._high
-        parameter_dict["bins"] = self._bins
-        parameter_dict["logscale"] = self._logscale
-        parameter_dict["base"] = self._base
-        parameter_dict["logscale_deviation"] = self._logscale_deviation
+        if self.is_binned():
+            parameter_dict["low"] = self._low
+            parameter_dict["high"] = self._high
+            parameter_dict["bins"] = self._bins
+            parameter_dict["logscale"] = self._logscale
+            parameter_dict["base"] = self._base
+            parameter_dict["logscale_deviation"] = self._logscale_deviation
         if basic:
             return parameter_dict
         # Add non-basic attributes
         parameter_dict["current_value"] = self._current_value
         parameter_dict["best_fit"] = self._best_fit
-        parameter_dict["penalty_term"] = self._best_fit
+        parameter_dict["penalty_term"] = self._penalty_term
         return parameter_dict
 
 
@@ -620,12 +643,10 @@ class RateParameter(FitParameter):
         rather than a linear array.
       _base (float): Base to use when creating an logscale array.
     """
-    def __init__(self, name, prior, sigma, low, high,
-                 bins, logscale=None, base=numpy.e,
-                 logscale_deviation=None, **kwargs):
+    def __init__(self, name, prior, sigma=None, binned=None,
+                 floating=None, **kwargs):
         super(RateParameter, self).__init__(
-            name, prior, sigma, low, high, bins, logscale=logscale,
-            base=base, logscale_deviation=logscale_deviation, **kwargs)
+            name, prior, sigma, binned, floating, **kwargs)
 
     def apply_to(self, spectrum):
         """ Scales spectrum to current value of rate parameter.
@@ -664,10 +685,10 @@ class ResolutionParameter(FitParameter):
         :class:`FitParameter`
     """
 
-    def __init__(self, name, prior, sigma, low,
-                 high, bins, dimension, **kwargs):
+    def __init__(self, name, prior, dimension, sigma=None,
+                 binned=None, floating=None, **kwargs):
         super(ResolutionParameter, self).__init__(
-            name, prior, sigma, low, high, bins, dimension, **kwargs)
+            name, prior, sigma, binned, floating, dimension=dimension, **kwargs)
 
     def apply_to(self, spectrum):
         """ Smears spectrum to current value of resolution.
@@ -704,10 +725,10 @@ class ScaleParameter(FitParameter):
         :class:`FitParameter`
     """
 
-    def __init__(self, name, prior, sigma, low,
-                 high, bins, dimension, **kwargs):
+    def __init__(self, name, prior, dimension, sigma=None,
+                 binned=None, floating=None, **kwargs):
         super(ScaleParameter, self).__init__(
-            name, prior, sigma, low, high, bins, dimension, **kwargs)
+            name, prior, sigma, binned, floating, dimension=dimension, **kwargs)
 
     def apply_to(self, spectrum):
         """ Convolves spectrum with current value of scale parameter.
@@ -744,10 +765,10 @@ class ShiftParameter(FitParameter):
         :class:`FitParameter`
    """
 
-    def __init__(self, name, prior, sigma, low,
-                 high, bins, dimension, **kwargs):
+    def __init__(self, name, prior, dimension, sigma=None,
+                 binned=None, floating=None, **kwargs):
         super(ShiftParameter, self).__init__(
-            name, prior, sigma, low, high, bins, dimension, **kwargs)
+            name, prior, sigma, binned, floating, dimension=dimension, **kwargs)
 
     def apply_to(self, spectrum):
         """ Convolves spectrum with current value of shift parameter.
@@ -767,7 +788,7 @@ class ShiftParameter(FitParameter):
         NotImplementedError("ShiftParameter.apply_to not yet implemented")
 
 
-class SpectraParameter(Parameter):
+class SpectraParameter(object):
     """Simple data container that holds information for a Spectra parameter
     (i.e. axis of the spectrum).
 
@@ -781,8 +802,11 @@ class SpectraParameter(Parameter):
     def __init__(self, name, low, high, bins):
         """Initialise SpectraParameter class
         """
-        super(SpectraParameter, self).__init__("spectra", name, low, high,
-                                               bins)
+#        binned = Binned(low, high, bins)
+#        super(SpectraParameter, self).__init__("spectra", name, binned=binned)
+        self._low = float(low)
+        self._high = float(high)
+        self._bins = int(bins)
 
     def get_bin(self, x):
         """ Gets the bin index which contains value x.
@@ -897,3 +921,76 @@ class SpectraParameter(Parameter):
                 self._bins = int(kwargs[kw])
             else:
                 raise TypeError("Unhandled parameter name / type %s" % kw)
+
+    def get_bins(self):
+        """ Get the number of bins.
+
+        Returns:
+          int: Number of bins for this parameter.
+        """
+        return self._bins
+
+    def get_high(self):
+        """ Get the high value of the parameter
+
+        Returns:
+          float: The high value of the parameter.
+        """
+        return self._high
+
+    def get_low(self):
+        """ Get the low value of the parameter.
+
+        Returns:
+          float: The low value the parameter.
+        """
+        return self._low
+
+    def get_name(self):
+        """ Get the name of the parameter.
+
+        Returns:
+          float: The name of the parameter.
+        """
+        return self._name
+
+    def get_type(self):
+        """ Get the type of the parameter.
+
+        Returns:
+          float: The type of the parameter.
+        """
+        return self._type
+
+    def get_width(self):
+        """Get the width of the binning for the parameter
+
+        Returns:
+          float: Bin width.
+        """
+        return (self._high - self._low) / self._bins
+
+    def is_binned(self):
+        return self._binned != None
+
+    def is_floating(self):
+        return self._floating != None
+
+    def to_dict(self, basic=False):
+        """ Represent the properties of the parameter in a dictionary.
+
+        .. note:: The attributes :attr:`_name`, :attr:`_type` are never
+          included in the dictionary. This is because it is expected
+          that the dictionary returned here will usually be used as
+          part of a larger dictionary where type and/or parameter_name
+          are keys.
+
+        Returns:
+          dict: Representation of the parameter in the form of a
+            dictionary.
+        """
+        parameter_dict = {}
+        parameter_dict["low"] = self._low
+        parameter_dict["high"] = self._high
+        parameter_dict["bins"] = self._bins
+        return parameter_dict

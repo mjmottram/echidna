@@ -13,24 +13,23 @@ class Minimiser(object):
 
     Args:
       name (string): Name of minimiser.
-      per_bin (bool, optional): Flag if minimiser should expect a
-        test statistic value per-bin.
 
     Attributes:
       _name (string): Name of minimiser.
-      _per_bin (bool, optional): Flag if minimiser should expect a
-        test statistic value per-bin.
       _type (string): Type of minimiser, e.g. GridSearch
     """
     __metaclass__ = abc.ABCMeta  # Only required for python 2
 
-    def __init__(self, name, per_bin=False):
+    def __init__(self, name):
         self._name = name
         self._type = None  # No type for base class
-        self._per_bin = per_bin
+        self._binned = False # Default
+
+    def is_binned(self):
+        return self._binned
 
     @abc.abstractmethod
-    def minimise(self, funct, test_statistic):
+    def minimise(self, fit_config, funct, test_statistic):
         """ Abstract base class method to override.
 
         Args:
@@ -51,7 +50,28 @@ class Minimiser(object):
                                   "when overridden in a derived class")
 
 
-class GridSearch(FitResults, Minimiser):
+class BinnedMinimiser(Minimiser):
+    """ Base class for binned minimisers
+
+    Args:
+      name (string): Name of minimiser.
+      per_bin (bool, optional): Flag if the minimiser should expect a
+        test statistic value per bin.
+
+    Attributes:
+      _name (string): Name of minimiser.
+      _type (string): Type of minimiser, e.g. GridSearch
+      _per_bin (bool, optional): Flag if minimiser should expect a
+        test statistic value per-bin.
+    """
+
+    def __init__(self, name, per_bin = False):
+        super(BinnnedMinimiser, name)
+        self._per_bin = per_bin
+        self._binned = True
+
+
+class GridSearch(FitResults, BinnedMinimiser):
     """ A grid-search minimisation algorithm.
 
     Although this is minimisation, it makes more sense for the class to
@@ -114,7 +134,7 @@ class GridSearch(FitResults, Minimiser):
         self._per_bin = per_bin
         self._use_numpy = use_numpy
 
-    def minimise(self, funct, test_statistic):
+    def minimise(self, fit_config, funct, test_statistic):
         """ Method to perform the minimisation.
 
         Args:
@@ -169,10 +189,10 @@ class GridSearch(FitResults, Minimiser):
 
         for index, par in zip(position, self._fit_config.get_pars()):
             parameter = self._fit_config.get_par(par)
-            best_fit = parameter.get_value_at(index)
+            best_fit = parameter.get_values()[index]
             sigma = parameter.get_sigma()
             prior = parameter.get_prior()
-            parameter.set_best_fit(parameter.get_value_at(index))
+            parameter.set_best_fit(parameter.get_values()[index])
             if sigma is not None:
                 parameter.set_penalty_term(
                     test_statistic.get_penalty_term(best_fit, prior, sigma))
@@ -318,3 +338,72 @@ class GridSearch(FitResults, Minimiser):
                     yield values, indices
         else:
             yield values, indices
+
+
+class MetropolisHastings(Minimiser):
+     """MetropolisHastings MCMC minimisation
+     """
+ 
+     def __init__(self, name = None, burn_in = 5000, niter = 10000, thin_factor = 10):
+         super(MetropolisHastings, self).__init__(name = 'metropolis_hastings')
+         self._type = MetropolisHastings
+         # Force set the defaults for now
+         self._burn_in = burn_in
+         self._niter = niter
+         self._thin_factor = thin_factor
+         self._per_bin = False
+
+     def get_name(self):
+         return "MetHast"
+ 
+     def minimise(self, fit_config, funct, test_statistic):
+         """Minimise the docstrings!
+         """
+         # Choose a starting point
+         current_par = [fit_config.get_par(p)._current_value \
+                        for p in fit_config.get_pars()]
+         step_size = [fit_config.get_par(p).step_size \
+                      for p in fit_config.get_pars()]
+         #current_par = self._start_point
+         current_stat, current_penalty = funct(*current_par)
+         acceptance = 0
+         sample = [] # could reserve points
+         best_stat = None
+         best_point = None
+ 
+         for i in range(self._niter):
+ 
+             # Random jump
+             test_par = numpy.random.normal(current_par, step_size)
+             test_stat, test_penalty = funct(*test_par)
+             
+             # Test statistic should always be minimised
+             # LL methods should return -ve stat
+             if test_stat < current_stat or \
+                (numpy.exp(current_stat - test_stat) > numpy.random.uniform()):
+                 current_par = test_par
+                 current_stat = test_stat
+                 acceptance += 1
+                 accepted = True
+             else:
+                 accepted = False
+ 
+             # Add to sample according to thinning and burn in
+             if i > self._burn_in and not (i % self._thin_factor):
+                 sample.append(current_par)
+                 if current_stat < best_stat or best_stat is None:
+                     best_stat = current_stat
+                     best_point = current_par
+ 
+             if not (i%(self._thin_factor*100)):
+                 print current_par, current_stat, accepted
+             
+         # Return best fit point
+         # FIXME: this could either be the mean of the sample
+         #        or the point in the sample with the best test_statistic
+         self._best_point = best_point
+         self._best_ll = best_stat
+         self._error = numpy.std(sample, axis=0)
+         # TODO: should acceptance be logged only after burn in?
+         self._acceptance = float(acceptance) / self._niter
+         return numpy.mean(sample, axis=0)

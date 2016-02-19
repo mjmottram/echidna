@@ -1,7 +1,7 @@
 import numpy
 
 import echidna.output.store as store
-from echidna.fit.minimise import GridSearch
+import echidna.fit.minimise as minimise
 from echidna.fit.fit_results import FitResults
 from echidna.errors.custom_errors import CompatibilityError
 from echidna.core.config import GlobalFitConfig
@@ -73,19 +73,16 @@ class Fit(object):
         A spectrum of the signal that you are fitting.
       _minimiser (:class:`echidna.limit.minimiser.Minimiser)`: Object to
         handle the minimisation.
-      _fit_results (:class:`FitResults`): Specify a separate
-        Fit Results class.
       _checked (bool): If True then the fit class is ready to be used.
       _use_pre_made (bool): Flag whether to load a pre-made spectrum
         for each systematic value, or apply convolutions on the fly.
       _pre_made_dir (string): Directory in which pre-made convolved
         spectra are stored.
     """
-    def __init__(self, roi, test_statistic, fit_config=None, data=None,
-                 fixed_backgrounds=None, floating_backgrounds=None,
-                 signal=None, shrink=True, per_bin=False, minimiser=None,
-                 fit_results=None, use_pre_made=False, pre_made_base_dir=None,
-                 single_bin=False):
+    def __init__(self, roi, test_statistic, minimiser, fit_config=None,
+                 data=None, fixed_backgrounds=None, floating_backgrounds=None,
+                 signal=None, shrink=True, per_bin=False, fit_results=None,
+                 use_pre_made=False, pre_made_base_dir=None, single_bin=False):
         self._logger = logging.getLogger("Fit")
         self._checked = False
         self.set_roi(roi)
@@ -141,19 +138,7 @@ class Fit(object):
 
         # Try to set minimiser and fit_results
         # Will only work if check_all_spectra passes.
-        try:
-            self.set_minimiser(minimiser)
-        except CompatibilityError as detail:
-            self._minimiser = None
-            self._logger.warning("Minimiser could not be set because: %s" %
-                                 detail)
-
-        try:
-            self.set_fit_results(fit_results)
-        except CompatibilityError as detail:
-            self._fit_results = None
-            self._logger.warning("Fit results could not be set because: %s" %
-                                 detail)
+        self.set_minimiser(minimiser)
 
         self._use_pre_made = use_pre_made
         self._pre_made_base_dir = pre_made_base_dir
@@ -256,7 +241,6 @@ class Fit(object):
           ValueError: If number of floating backgrounds and number of
             spectral fit parameters do not match.
           AttributeError: If :attr:`_minimiser` has not been set.
-          AttributeError: If :attr:`_fit_results` has not been set.
           ValueError: If (un)expected per_bin flag in minimiser.
           ValueError: If (un)expected integer value for num_bins, in
             fit_results.
@@ -282,23 +266,23 @@ class Fit(object):
                     str(self.get_fit_config().get_spectra_pars()))
                 raise ValueError("Expected 0 spectral fit pars for "
                                  "no floating backgrounds")
+        self._checked = True
 
         # Check minimiser and fit results
         if self._minimiser is None:
             raise AttributeError("Minimiser has not been set.")
-        if self._fit_results is None:
-            raise AttributeError("Fit results has not been set.")
 
         # Check per_bin propagation
         if self._per_bin:
             if not self._minimiser._per_bin:
                 raise ValueError("Expected per_bin True flag in minimiser")
+            if not self._test_statistic._per_bin:
+                raise ValueError("Expected per_bin True flag in test_statistic")
         else:
             if self._minimiser._per_bin:
                 raise ValueError("Unexpected per_bin True flag in minimiser")
-
-        if not self._test_statistic._per_bin:
-            raise ValueError("Expected per_bin True flag in test_statistic")
+            if self._test_statistic._per_bin:
+                raise ValueError("Expected per_bin True flag in test_statistic")
 
         self._checked = True
 
@@ -374,14 +358,6 @@ class Fit(object):
         """
         """
         return self._fit_config
-
-    def get_fit_results(self):
-        """ Gets the fit results object for the fit.
-
-        Returns:
-          :class:`echidna.core.fit.FitResults`: FitResults for the fit.
-        """
-        return self._fit_results
 
     def get_fixed_background(self):
         """ Gets the fixed background you are fitting.
@@ -472,7 +448,8 @@ class Fit(object):
         else:  # Pass to minimiser
             if self._minimiser is None:
                 raise AttributeError("Minimiser is not set.")
-            return self._minimiser.minimise(self._funct, self._test_statistic)
+            return self._minimiser.minimise(self._fit_config, self._funct,
+                                            self._test_statistic)
 
     def _funct(self, *args):
         """ Callable to pass to minimiser.
@@ -675,31 +652,6 @@ class Fit(object):
             raise TypeError("fit_config type (%s) is invalid" %
                             type(fit_config))
 
-    def set_fit_results(self, fit_results=None):
-        """
-        Args:
-          fit_results (:class:`FitResults`, optional): The fit results
-            instance.
-        Raises:
-          IndexError: If fit config contains no parameters.
-        """
-        self.check_all_spectra()  # All spectra should be set and checked first
-        if fit_results:
-            self._fit_results = fit_results
-            self._logger.debug("Setting %s as fit_results" %
-                               fit_results.get_name())
-        else:  # If using GridSearch minimiser this is should befit_results
-            if len(self.get_fit_config().get_pars()) == 0:
-                raise IndexError("No parameters found in fit config.")
-            if isinstance(self._minimiser, GridSearch):
-                self._fit_results = self._minimiser
-                self._logger.debug("Setting GridSearch (%s) as fit_results" %
-                                   self._minimiser.get_name())
-            else:
-                self._fit_results = FitResults(
-                    self._fit_config, copy.copy(self._data.get_config()),
-                    name=self._fit_config.get_name())
-
     def set_fixed_background(self, fixed_background, shrink=True):
         """ Sets the fixed background you want to fit.
 
@@ -751,27 +703,23 @@ class Fit(object):
           IndexError: If fit config contains no parameters.
         """
         self.check_all_spectra()  # All spectra should be set and checked first
-        if minimiser:
-            self._minimiser = minimiser
-            self._logger.debug("Setting %s as minimiser" %
-                               minimiser.get_name())
-        else:  # Use default GridSearch
-            if len(self.get_fit_config().get_pars()) == 0:
-                raise IndexError("No parameters found in fit config.")
-            if self._per_bin:
-                self._minimiser = GridSearch(
-                    fit_config=self._fit_config,
-                    spectra_config=self._data.get_config(),
-                    name=self._fit_config.get_name(),
-                    # This assumes fitting over all dimensions
-                    per_bin=self._per_bin)
-            else:
-                self._minimiser = GridSearch(
-                    fit_config=self._fit_config,
-                    spectra_config=self._data.get_config(),
-                    name=self._fit_config.get_name())
+        if not minimiser:  # Use default GridSearch
+            minimiser = minimise.GridSearch(
+                fit_config=self._fit_config,
+                spectra_config=self._data.get_config(),
+                name=self._fit_config.get_name(),
+                # This assumes fitting over all dimensions
+                per_bin=self._per_bin)
             self._logger.debug("Created GridSearch (%s) to use as minimiser" %
                                self._minimiser.get_name())
+        # Ensure the minimiser and fit parameters are consistent
+        for par in self._fit_config.get_pars():
+            if self._fit_config.get_par(par).is_binned() != minimiser.is_binned():
+                raise CompatibilityError("Cannot run with mix of binned and unbinned")
+        self._minimiser = minimiser
+        self._logger.debug("Setting %s as minimiser" %
+                           minimiser.get_name())
+
 
     def set_test_statistic(self, test_statistic):
         """ Sets the method you want to use to calculate test statistics in

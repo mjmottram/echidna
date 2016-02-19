@@ -98,6 +98,8 @@ class TestGridSearch(unittest.TestCase):
         fit_config.add_config(fit_config_B)
         fit_config.add_config(fit_config_C)
 
+        self._fit_config = fit_config
+
         # Initialise test statistic
         self._test_statistic = test_statistic.BakerCousinsChi(per_bin=True)
 
@@ -190,7 +192,8 @@ class TestGridSearch(unittest.TestCase):
         fit_C = 13.0
 
         # Test default grid search, with numpy
-        minimum = self._default_grid_search.minimise(self._funct,
+        minimum = self._default_grid_search.minimise(self._fit_config,
+                                                     self._funct,
                                                      self._test_statistic)
         self.assertIsInstance(minimum, float)
         results = self._default_grid_search.get_summary()
@@ -199,7 +202,8 @@ class TestGridSearch(unittest.TestCase):
         self.assertAlmostEqual(results.get("C_rate").get("best_fit"), fit_C)
 
         # Try grid search using find_minimum
-        self._grid_search.minimise(self._funct, self._test_statistic)
+        self._grid_search.minimise(self._fit_config, self._funct,
+                                   self._test_statistic)
         results = self._grid_search.get_summary()
         self.assertAlmostEqual(results.get("A_rate").get("best_fit"), fit_A)
         self.assertAlmostEqual(results.get("B_rate").get("best_fit"), fit_B)
