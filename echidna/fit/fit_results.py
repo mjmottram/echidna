@@ -7,7 +7,71 @@ import itertools
 
 
 class FitResults(object):
-    """ Base class for handling results of the fit.
+    def __init__(self, fit_config, min_value, min_position, name=None):
+        self._fit_config = fit_config
+        if name is None:
+            name = fit_config.get_name() + "_results"
+        self._name = name
+        self._minimum_value = min_value
+        self._minimum_position = min_position
+
+    def get_minimum_position(self):
+        """
+        Returns:
+          (float): Position of the minimum value in the array returned
+            by :meth:`get_fit_data`, stored in :attr:`_minimum_position`.
+        """
+        return self._minimum_position
+
+    def get_minimum_value(self):
+        """
+        Returns:
+          (float): Minimum value of the array returned by
+            :meth:`get_fit_data`, stored in :attr:`_minimum_value`.
+        """
+        return self._minimum_value
+
+    def get_name(self):
+        """
+        Returns:
+          string: Name of fit results object.
+        """
+        return self._name
+
+    def get_summary(self):
+        """ Get a summary of the fit parameters.
+
+        Returns:
+          dict: Results of fit. Dictionary with fit parameter names as
+            keys and a nested dictionary as values containing the keys
+            best_fit and penalty_term with the corresponding values for the
+            parameter.
+        """
+        fit_results = {}
+        for par in self._fit_config.get_pars():
+            parameter = self._fit_config.get_par(par)
+            fit_results[par] = {"best_fit": parameter.get_best_fit(),
+                                "penalty_term": parameter.get_penalty_term()}
+        return fit_results
+    def set_minimum_position(self, minimum_position):
+        """
+        Args:
+          minimum_position (float): Position of the minimum value of
+            the array returned by :meth:`get_fit_data`.
+        """
+        self._minimum_position = minimum_position
+
+    def set_minimum_value(self, minimum_value):
+        """
+        Args:
+          minimum_value (float): Minimum value of the array returned by
+            :meth:`get_fit_data`.
+        """
+        self._minimum_value = minimum_value
+
+
+class BinnedFitResults(FitResults):
+    """ Base class for handling results of a binned fit.
 
     Args:
       fit_config (:class:`echidna.core.spectra.GlobalFitConfig`): The
@@ -46,56 +110,13 @@ class FitResults(object):
 
         >>> fit_results = FitResults(fitter.get_config(), data.get_config())
     """
-    def __init__(self, fit_config, spectra_config, name=None):
-        self._fit_config = fit_config
-        self._spectra_config = spectra_config
-        if name is None:
-            name = fit_config.get_name() + "_results"
-        self._name = name
-        stats_shape = fit_config.get_shape() + spectra_config.get_shape()
-        self._stats = numpy.zeros(stats_shape)
-        self._penalty_terms = numpy.zeros(fit_config.get_shape())
-        self._minimum_value = None
-        self._minimum_position = None
-        self._resets = 0
-
-    def get_fit_config(self):
-        """
-        Returns:
-          (:class:`echidna.limit.fit.FitConfig`): Configuration of fit.
-        """
-        return self._fit_config
-
-    def get_minimum_position(self):
-        """
-        Returns:
-          (float): Position of the minimum value in the array returned
-            by :meth:`get_fit_data`, stored in :attr:`_minimum_position`.
-        """
-        return self._minimum_position
-
-    def get_minimum_value(self):
-        """
-        Returns:
-          (float): Minimum value of the array returned by
-            :meth:`get_fit_data`, stored in :attr:`_minimum_value`.
-        """
-        return self._minimum_value
-
-    def get_name(self):
-        """
-        Returns:
-          string: Name of fit results object.
-        """
-        return self._name
-
-    def get_resets(self):
-        """
-        Returns:
-          int: Number of times the grid has been reset (:attr:`_resets`).
-        """
-        return self._resets
-
+    def __init__(self, fit_config, min_value, min_position, stats,
+                 penalties, name=None):
+        super(BinnedFitResults, self).__init__(fit_config, min_value,
+                                               min_position, name)
+        self._stats = stats
+        self._penalties = penalties
+    
     def get_penalty_term(self, indices):
         """ Gets the array of penalty terms.
 
@@ -247,22 +268,6 @@ class FitResults(object):
         combined = combined + self._penalty_terms
         return combined
 
-    def get_summary(self):
-        """ Get a summary of the fit parameters.
-
-        Returns:
-          dict: Results of fit. Dictionary with fit parameter names as
-            keys and a nested dictionary as values containing the keys
-            best_fit and penalty_term with the corresponding values for the
-            parameter.
-        """
-        fit_results = {}
-        for par in self._fit_config.get_pars():
-            parameter = self._fit_config.get_par(par)
-            fit_results[par] = {"best_fit": parameter.get_best_fit(),
-                                "penalty_term": parameter.get_penalty_term()}
-        return fit_results
-
     def nd_project_stat(self, indices, *parameters):
         """ Projects the test statistic values, at given the given
         indices, onto the axes specified by fit and spectral parameters.
@@ -353,59 +358,6 @@ class FitResults(object):
                     projection = numpy.sum(projection, axis=axis)
         return projection
 
-    def reset_grids(self):
-        """ Resets the grids stored in :attr:`_stats` and
-          :attr:`_penalty_terms`, including shape.
-
-        .. warning:: If fit parameters have been added/removed, calling
-          this method will increase/decrease the dimensions of the grid
-          to compensate for this change.
-        """
-        if self._resets == 0:
-            self._resets = 1
-            self._name += "_%d" % self._resets
-        else:
-            new_name = self._name.split("_")[0]
-            for part in self._name.split("_")[1:-1]:
-                new_name += "_" + part
-            self._resets += 1
-            self._name = new_name + "_" + str(self._resets)
-        stats_shape = (self._fit_config.get_shape() +
-                       self._spectra_config.get_shape())
-        self._stats = numpy.zeros(stats_shape)
-        self._penalty_terms = numpy.zeros(self._fit_config.get_shape())
-
-    def set_fit_config(self, fit_config):
-        """ Set the fit config.
-
-        .. warning:: This will automatically call :meth:`reset_grid`
-          to update the grid based on the new fit config
-
-        Args:
-          fit_config (:class:`echidna.core.spectra.GlobalFitConfig`): The
-            configuration for fit. This should be a direct copy of the
-            :class:`echidna.core.spectra.GlobalFitConfig` object in
-            :class:`echidna.limit.fit.Fit`.
-        """
-        self._fit_config = fit_config
-        self.reset_grid()
-
-    def set_minimum_position(self, minimum_position):
-        """
-        Args:
-          minimum_position (float): Position of the minimum value of
-            the array returned by :meth:`get_fit_data`.
-        """
-        self._minimum_position = minimum_position
-
-    def set_minimum_value(self, minimum_value):
-        """
-        Args:
-          minimum_value (float): Minimum value of the array returned by
-            :meth:`get_fit_data`.
-        """
-        self._minimum_value = minimum_value
-
     def set_penalty_terms(self, penalty_terms):
         """ Sets the array containing penalty term values.
 
@@ -459,21 +411,6 @@ class FitResults(object):
                 "indices %s out of bounds for fit with dimensions %s" %
                 (str(indices), str(self._fit_config.get_shape())))
         self._penalty_terms[indices] = penalty_term
-
-    def set_spectra_config(self, spectra_config):
-        """ Set the spectra config.
-
-        .. warning:: This will automatically call :meth:`reset_grid`
-          to update the grid based on the new fit config
-
-        Args:
-          spectra_config (:class:`echidna.core.spectra.SpectraConfig`): The
-            configuration for the spectra. This should usually be a
-            direct copy of the :class:`echidna.core.spectra.SpectraConfig`
-            in the data spectrum.
-        """
-        self._fit_config = spectra_config
-        self.reset_grid()
 
     def set_stat(self, stat, indices):
         """ Sets the test statistic values in array at the point
@@ -529,3 +466,5 @@ class FitResults(object):
                              "expected shape is %s" %
                              (str(stats.shape), str(self._stats.shape)))
         self._stats = stats
+
+

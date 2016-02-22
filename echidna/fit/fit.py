@@ -359,6 +359,14 @@ class Fit(object):
         """
         return self._fit_config
 
+    def get_fit_results(self):
+        """ Gets the fit results object for the fit.
+
+        Returns:
+          :class:`echidna.core.fit.FitResults`: FitResults for the fit.
+        """
+        return self._fit_results
+
     def get_fixed_background(self):
         """ Gets the fixed background you are fitting.
 
@@ -448,8 +456,8 @@ class Fit(object):
         else:  # Pass to minimiser
             if self._minimiser is None:
                 raise AttributeError("Minimiser is not set.")
-            return self._minimiser.minimise(self._fit_config, self._funct,
-                                            self._test_statistic)
+            return self._minimiser.minimise(self._fit_config, self._data.get_config(),
+                                            self._funct, self._test_statistic)
 
     def _funct(self, *args):
         """ Callable to pass to minimiser.

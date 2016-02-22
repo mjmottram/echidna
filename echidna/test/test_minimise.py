@@ -50,7 +50,7 @@ class TestGridSearch(unittest.TestCase):
         # Fill spectrum with random Gaussian data
         for i_decay in range(int(num_decays)):
             x = numpy.random.normal(loc=2.5, scale=0.1)
-            if numpy.random.uniform() > 0.1:
+            if x >= 2.0 and x <= 3.0:
                 spectrum.fill(x=x)
 
         # Save three copies of spectrum
@@ -99,17 +99,16 @@ class TestGridSearch(unittest.TestCase):
         fit_config.add_config(fit_config_C)
 
         self._fit_config = fit_config
+        self._spectra_config = spectra_config
 
         # Initialise test statistic
         self._test_statistic = test_statistic.BakerCousinsChi(per_bin=True)
 
         # Initialise default GridSearch
-        self._default_grid_search = GridSearch(fit_config,
-                                               spectra_config,
+        self._default_grid_search = GridSearch(
                                                "default_grid_search")
         # Initialise GridSearch using find_minimum
-        self._grid_search = GridSearch(fit_config,
-                                       spectra_config,
+        self._grid_search = GridSearch(
                                        "grid_search",
                                        use_numpy=False)
 
@@ -192,19 +191,25 @@ class TestGridSearch(unittest.TestCase):
         fit_C = 13.0
 
         # Test default grid search, with numpy
-        minimum = self._default_grid_search.minimise(self._fit_config,
+        results = self._default_grid_search.minimise(self._fit_config,
+                                                     self._spectra_config,
                                                      self._funct,
                                                      self._test_statistic)
+        minimum = results.get_minimum_value()
         self.assertIsInstance(minimum, float)
-        results = self._default_grid_search.get_summary()
-        self.assertAlmostEqual(results.get("A_rate").get("best_fit"), fit_A)
-        self.assertAlmostEqual(results.get("B_rate").get("best_fit"), fit_B)
-        self.assertAlmostEqual(results.get("C_rate").get("best_fit"), fit_C)
+        summary = results.get_summary()
+        self.assertAlmostEqual(summary.get("A_rate").get("best_fit"), fit_A)
+        self.assertAlmostEqual(summary.get("B_rate").get("best_fit"), fit_B)
+        self.assertAlmostEqual(summary.get("C_rate").get("best_fit"), fit_C)
 
         # Try grid search using find_minimum
-        self._grid_search.minimise(self._fit_config, self._funct,
-                                   self._test_statistic)
-        results = self._grid_search.get_summary()
-        self.assertAlmostEqual(results.get("A_rate").get("best_fit"), fit_A)
-        self.assertAlmostEqual(results.get("B_rate").get("best_fit"), fit_B)
-        self.assertAlmostEqual(results.get("C_rate").get("best_fit"), fit_C)
+        results = self._grid_search.minimise(self._fit_config, self._spectra_config, self._funct,
+                                             self._test_statistic)
+        summary = results.get_summary()
+        self.assertAlmostEqual(summary.get("A_rate").get("best_fit"), fit_A)
+        self.assertAlmostEqual(summary.get("B_rate").get("best_fit"), fit_B)
+        self.assertAlmostEqual(summary.get("C_rate").get("best_fit"), fit_C)
+
+
+if __name__=="__main__":
+    unittest.main()

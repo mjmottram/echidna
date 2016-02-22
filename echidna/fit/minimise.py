@@ -2,7 +2,7 @@
 """
 import numpy
 
-from echidna.fit.fit_results import FitResults
+from echidna.fit.fit_results import FitResults, BinnedFitResults
 
 import copy
 import abc
@@ -25,11 +25,14 @@ class Minimiser(object):
         self._type = None  # No type for base class
         self._binned = False # Default
 
+    def get_name(self):
+        return self._name
+
     def is_binned(self):
         return self._binned
 
     @abc.abstractmethod
-    def minimise(self, fit_config, funct, test_statistic):
+    def minimise(self, fit_config, spectra_config, funct, test_statistic):
         """ Abstract base class method to override.
 
         Args:
@@ -66,26 +69,15 @@ class BinnedMinimiser(Minimiser):
     """
 
     def __init__(self, name, per_bin = False):
-        super(BinnnedMinimiser, name)
+        super(BinnedMinimiser, self).__init__(name)
         self._per_bin = per_bin
         self._binned = True
 
 
-class GridSearch(FitResults, BinnedMinimiser):
+class GridSearch(BinnedMinimiser):
     """ A grid-search minimisation algorithm.
 
-    Although this is minimisation, it makes more sense for the class to
-    inherit from :class:`FitResults`, as the :attr:`_stats` attribute is
-    the same in both classes, as is the :attr:`_fit_config`.
-
     Args:
-      fit_config (:class:`echidna.core.spectra.GlobalFitConfig`): Configuration
-        for fit. This should be a direct copy of the ``FitConfig``
-        in :class:`echidna.limit.fit.Fit`.
-      spectra_config (:class:`echidna.core.spectra.SpectraConfig`): The
-        for spectra configuration. The recommended spectrum config to
-        include here is the one from the data spectrum, to which you
-        are fitting.
       name (str, optional): Name of this :class:`FitResults` class
         instance. If no name is supplied, name from fit_results will be
         taken and appended with "_results".
@@ -97,13 +89,6 @@ class GridSearch(FitResults, BinnedMinimiser):
         use numpy.
 
     Attributes:
-      _fit_config (:class:`echidna.core.spectra.GlobalFitConfig`): The
-        configuration for fit. This should be a direct copy of the
-        ``FitConfig`` in :class:`echidna.limit.fit.Fit`.
-      _spectra_config (:class:`echidna.core.spectra.SpectraConfig`): The
-        for spectra configuration. The recommended spectrum config to
-        include here is the one from the data spectrum, to which you
-        are fitting.
       _name (string): Name of this :class:`GridSearch` class instance.
       _stats (:class:`numpy.ndarray`): Array of values of the test
         statistic calculated during the fit.
@@ -124,17 +109,13 @@ class GridSearch(FitResults, BinnedMinimiser):
         minimum, or use the :meth:`find_minimum` method. Default is to
         use numpy.
     """
-    def __init__(self, fit_config, spectra_config,
-                 name=None, per_bin=False, use_numpy=True):
-        # FitResults
-        super(GridSearch, self).__init__(fit_config, spectra_config, name=None)
-        # Minimiser __init__ won't be called, so replicate functionality
-        self._name = name
+    def __init__(self, name=None, per_bin=False, use_numpy=True):
+        super(GridSearch, self).__init__(name)
         self._type = GridSearch
         self._per_bin = per_bin
         self._use_numpy = use_numpy
 
-    def minimise(self, fit_config, funct, test_statistic):
+    def minimise(self, fit_config, spectra_config, funct, test_statistic):
         """ Method to perform the minimisation.
 
         Args:
@@ -155,6 +136,12 @@ class GridSearch(FitResults, BinnedMinimiser):
         Returns:
           float: Minimum value found during minimisation.
         """
+        # Start by setting the internal fit_config
+        self._fit_config = fit_config
+        # Generate the array that seems to be required later
+        # Automatically resets the grid at the start of minimisation
+        self._stats = numpy.zeros(fit_config.get_shape() + spectra_config.get_shape())
+        self._penalty_terms = numpy.zeros(fit_config.get_shape())
         # Loop over all possible combinations of fit parameter values
         for values, indices in self._get_fit_par_values():
             # Call funct and pass array to it
@@ -166,17 +153,11 @@ class GridSearch(FitResults, BinnedMinimiser):
                     raise TypeError("Expecting result of type numpy.ndarray "
                                     "(not %s), for per_bin enabled" %
                                     type(result))
-                    expected_shape = self._spectra_config.get_shape()
-                    if result.shape != expected_shape:
-                        raise ValueError(
-                            "Expecting result to be numpy array with shape "
-                            "%s (not %s), for per_bin enabled" %
-                            (str(expected_shape), str(result.shape)))
             self.set_stat(result, tuple(indices))
             self.set_penalty_term(penalty, tuple(indices))
 
         # Now grid is filled minimise
-        minimum = self.get_stats()
+        minimum = copy.copy(self._stats)
 
         if self._use_numpy:
             # Set best_fit values
@@ -199,10 +180,15 @@ class GridSearch(FitResults, BinnedMinimiser):
             else:  # penalty term = 0
                 parameter.set_penalty_term(0.)
 
-        self.set_minimum_value(minimum)
-        self.set_minimum_position(position)  # save position of minimum
+        self._minimum_value = minimum
+        self._minimum_position = position
+        #self.set_minimum_value(minimum)
+        #self.set_minimum_position(position)  # save position of minimum
         # Return minimum to fitting
-        return minimum
+        #return minimum
+        results = BinnedFitResults(fit_config, minimum, position, self._stats,
+                                   self._penalty_terms)
+        return results
 
     def _update_coords(self, coords, new_coords):
         """ Internal method called by :meth:`find_minimum` to update the
@@ -339,71 +325,173 @@ class GridSearch(FitResults, BinnedMinimiser):
         else:
             yield values, indices
 
+    def set_penalty_terms(self, penalty_terms):
+        """ Sets the array containing penalty term values.
+
+        Args:
+          penalty_terms (:class:`numpy.ndarray`): The array of penalty
+            term values
+
+        Raises:
+          TypeError: If penalty_terms is not an :class:`numpy.ndarray`
+          ValueError: If the penalty_terms array does not have the required
+            shape.
+        """
+        if not isinstance(penalty_terms, numpy.ndarray):
+            raise TypeError("penalty_terms must be a numpy array")
+        if penalty_terms.shape != self._fit_config.get_shape():
+            raise ValueError("penalty_terms array has incorrect shape (%s), "
+                             "expected shape is %s" %
+                             (str(penalty_terms.shape),
+                              str(self._fit_config.get_shape())))
+        self._penalty_terms = penalty_terms
+
+    def set_penalty_term(self, penalty_term, indices):
+        """ Sets the total penalty term value at the point in the array
+        specified by indices.
+
+        Args:
+          penalty_term (float): Best fit value of a fit parameter.
+          indices (tuple): The index along each fit parameter dimension
+            specifying the coordinates from which to set the total
+            penalty term value.
+
+        Raises:
+          TypeError: If penalty_term is not a float.
+          TypeError: If the indices supplied are not at tuple
+          IndexError: If the number of indices supplied does not match
+            the dimensions of the fit
+          IndexError: If the indices supplied are out of bounds for
+            the fit dimensions
+        """
+        if not isinstance(penalty_term, float):
+            raise TypeError("penalty_term must be a float")
+        if not isinstance(indices, tuple):
+            raise TypeError("indices supplied must be a tuple of integers")
+        if len(indices) != len(self._fit_config.get_shape()):
+            raise IndexError("dimension mismatch, indices supplied contian "
+                             "%d dimensions but fit contains %d dimensions "
+                             "(parameters)" %
+                             (len(indices), len(self._fit_config.get_shape())))
+        if indices > self._fit_config.get_shape():
+            raise IndexError(
+                "indices %s out of bounds for fit with dimensions %s" %
+                (str(indices), str(self._fit_config.get_shape())))
+        self._penalty_terms[indices] = penalty_term
+
+    def set_stat(self, stat, indices):
+        """ Sets the test statistic values in array at the point
+        specified by indices
+
+        Args:
+          stat (:class:`numpy.ndarray`): Values of the test statistic.
+          indices (tuple): Position in the array.
+
+        Raises:
+          TypeError: If the indices supplied are not at tuple
+          IndexError: If the number of indices supplied does not match
+            the dimensions of the fit
+          IndexError: If the indices supplied are out of bounds for
+            the fit dimensions
+          TypeError: If stat is not a :class:`numpy.ndarray`.
+          ValueError: If the stats array has incorrect shape.
+        """
+        if not isinstance(indices, tuple):
+            raise TypeError("indices supplied must be a tuple of integers")
+        if len(indices) != len(self._fit_config.get_shape()):
+            raise IndexError("dimension mismatch, indices supplied contian "
+                             "%d dimensions but fit contains %d dimensions "
+                             "(parameters)" %
+                             (len(indices), len(self._fit_config.get_shape())))
+        if indices > self._fit_config.get_shape():
+            raise IndexError(
+                "indices %s out of bounds for fit with dimensions %s" %
+                (str(indices), str(self._fit_config.get_shape())))
+        if not isinstance(stat, numpy.ndarray):
+            raise TypeError("stat must be a numpy array")
+        if stat.shape != self._stats[indices].shape:
+            raise ValueError("stat array has incorrect shape (%s), "
+                             "expected shape is %s" %
+                             (str(stat.shape),
+                              str(self._stats[indices].shape)))
+        self._stats[indices] = stat
+
+    def set_stats(self, stats):
+        """ Sets the total test statistics array.
+
+        Args:
+          stats (:class:`numpy.ndarray`): The total test statistics array.
+
+        Raises:
+          TypeError: If stats is not a :class:`numpy.ndarray`.
+          ValueError: If the stats array has incorrect shape.
+        """
+        if not isinstance(stats, numpy.ndarray):
+            raise TypeError("stats must be a numpy array")
+        if stats.shape != self._stats.shape:
+            raise ValueError("stats array has incorrect shape (%s), "
+                             "expected shape is %s" %
+                             (str(stats.shape), str(self._stats.shape)))
+        self._stats = stats
+
 
 class MetropolisHastings(Minimiser):
-     """MetropolisHastings MCMC minimisation
-     """
+    """MetropolisHastings MCMC minimisation
+    """
  
-     def __init__(self, name = None, burn_in = 5000, niter = 10000, thin_factor = 10):
-         super(MetropolisHastings, self).__init__(name = 'metropolis_hastings')
-         self._type = MetropolisHastings
-         # Force set the defaults for now
-         self._burn_in = burn_in
-         self._niter = niter
-         self._thin_factor = thin_factor
-         self._per_bin = False
+    def __init__(self, name = None, burn_in = 5000, niter = 10000, thin_factor = 10):
+        super(MetropolisHastings, self).__init__(name)
+        self._type = MetropolisHastings
+        self._burn_in = burn_in
+        self._niter = niter
+        self._thin_factor = thin_factor
+        self._per_bin = False
 
-     def get_name(self):
-         return "MetHast"
- 
-     def minimise(self, fit_config, funct, test_statistic):
-         """Minimise the docstrings!
-         """
-         # Choose a starting point
-         current_par = [fit_config.get_par(p)._current_value \
-                        for p in fit_config.get_pars()]
-         step_size = [fit_config.get_par(p).step_size \
-                      for p in fit_config.get_pars()]
-         #current_par = self._start_point
-         current_stat, current_penalty = funct(*current_par)
-         acceptance = 0
-         sample = [] # could reserve points
-         best_stat = None
-         best_point = None
- 
-         for i in range(self._niter):
- 
-             # Random jump
-             test_par = numpy.random.normal(current_par, step_size)
-             test_stat, test_penalty = funct(*test_par)
-             
-             # Test statistic should always be minimised
-             # LL methods should return -ve stat
-             if test_stat < current_stat or \
-                (numpy.exp(current_stat - test_stat) > numpy.random.uniform()):
-                 current_par = test_par
-                 current_stat = test_stat
-                 acceptance += 1
-                 accepted = True
-             else:
-                 accepted = False
- 
-             # Add to sample according to thinning and burn in
-             if i > self._burn_in and not (i % self._thin_factor):
-                 sample.append(current_par)
-                 if current_stat < best_stat or best_stat is None:
-                     best_stat = current_stat
-                     best_point = current_par
- 
-             if not (i%(self._thin_factor*100)):
-                 print current_par, current_stat, accepted
-             
-         # Return best fit point
-         # FIXME: this could either be the mean of the sample
-         #        or the point in the sample with the best test_statistic
-         self._best_point = best_point
-         self._best_ll = best_stat
-         self._error = numpy.std(sample, axis=0)
-         # TODO: should acceptance be logged only after burn in?
-         self._acceptance = float(acceptance) / self._niter
-         return numpy.mean(sample, axis=0)
+    def minimise(self, fit_config, spectra_config, funct, test_statistic):
+        """Minimise the docstrings!
+        """
+        # Choose a starting point
+        current_par = [fit_config.get_par(p)._current_value \
+                       for p in fit_config.get_pars()]
+        step_size = [fit_config.get_par(p).step_size \
+                     for p in fit_config.get_pars()]
+        current_stat, current_penalty = funct(*current_par)
+        
+        acceptance = 0
+        sample = [] # could reserve points
+        best_stat = None
+        best_point = None
+
+        for i in range(self._niter):
+
+            # Random jump
+            test_par = numpy.random.normal(current_par, step_size)
+            test_stat, test_penalty = funct(*test_par)
+            
+            # Test statistic should always be minimised
+            # LL methods should return -ve stat
+            if test_stat < current_stat or \
+               (numpy.exp(current_stat - test_stat) > numpy.random.uniform()):
+                current_par = test_par
+                current_stat = test_stat
+                acceptance += 1
+                accepted = True
+            else:
+                accepted = False
+
+            # Add to sample according to thinning and burn in
+            if i > self._burn_in and not (i % self._thin_factor):
+                sample.append(current_par)
+                if current_stat < best_stat or best_stat is None:
+                    best_stat = current_stat
+                    best_point = current_par
+
+        # Return best fit point
+        # FIXME: this could either be the mean of the sample
+        #        or the point in the sample with the best test_statistic
+        self._best_point = best_point
+        self._best_ll = best_stat
+        self._error = numpy.std(sample, axis=0)
+        # TODO: should acceptance be logged only after burn in?
+        self._acceptance = float(acceptance) / self._niter
+        return numpy.mean(sample, axis=0)
